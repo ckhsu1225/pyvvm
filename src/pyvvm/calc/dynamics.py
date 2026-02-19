@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import numpy as np
 import xarray as xr
-from .utils import solve_poisson_spectral
+from ..numerics import solve_poisson_spectral
+from .._utils import assign_compatible_coords
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class DynamicsMixin:
         u = grid.interp(ds['u'], 'X')
         v = grid.interp(ds['v'], 'Y')
         ws = np.sqrt(u**2 + v**2)
+        ws = assign_compatible_coords(ws, ds)
         ws.attrs.update({
             'standard_name': 'wind_speed',
             'long_name': 'wind speed',
@@ -73,6 +75,7 @@ class DynamicsMixin:
         u = grid.interp(ds['u'], 'X')
         v = grid.interp(ds['v'], 'Y')
         wd = (270. - np.rad2deg(np.arctan2(v, u))) % 360.
+        wd = assign_compatible_coords(wd, ds)
         wd.attrs.update({
             'standard_name': 'wind_direction',
             'long_name': 'wind direction',
@@ -88,7 +91,6 @@ class DynamicsMixin:
     @property
     def ivtu(self) -> xr.DataArray:
         """Zonal integrated vapor transport [kg/m/s]."""
-        self._validate_chunks('ivtu')
         ds = self._ds
         grid = self.grid
 
@@ -108,7 +110,6 @@ class DynamicsMixin:
     @property
     def ivtv(self) -> xr.DataArray:
         """Meridional integrated vapor transport [kg/m/s]."""
-        self._validate_chunks('ivtv')
         ds = self._ds
         grid = self.grid
 
@@ -128,7 +129,6 @@ class DynamicsMixin:
     @property
     def ivt(self) -> xr.DataArray:
         """Integrated vapor transport magnitude [kg/m/s]."""
-        self._validate_chunks('ivt')
         ds = self._ds
         grid = self.grid
 
@@ -188,8 +188,9 @@ class DynamicsMixin:
         ds = self._ds
         grid = self.grid
         
-        zeta = grid.interp(ds['zeta'], ['X', 'Y'])
-        zeta = self.mask(zeta).fillna(0.0)
+        zeta = self.mask(ds['zeta'])
+        zeta = grid.interp(zeta, ['X', 'Y']).fillna(0.0)
+        zeta = assign_compatible_coords(zeta, ds)
 
         dx = ds.coords['dx'].values
         dy = ds.coords['dy'].values
@@ -203,7 +204,7 @@ class DynamicsMixin:
             vectorize=True,      
             dask='parallelized', 
             output_dtypes=[zeta.dtype]
-        ).assign_coords(ds['th'].coords)
+        )
 
         psi.attrs.update({
             'standard_name': 'streamfunction',

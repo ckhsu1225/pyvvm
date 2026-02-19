@@ -362,7 +362,6 @@ class ThermoMixin:
     @property
     def cwv(self) -> xr.DataArray:
         """Column water vapor [mm]."""
-        self._validate_chunks('cwv')
         ds = self._ds
         grid = self.grid
 
@@ -381,7 +380,6 @@ class ThermoMixin:
     @property
     def lwp(self) -> xr.DataArray:
         """Liquid water path [mm]."""
-        self._validate_chunks('lwp')
         ds = self._ds
         grid = self.grid
 
@@ -400,7 +398,6 @@ class ThermoMixin:
     @property
     def iwp(self) -> xr.DataArray:
         """Ice water path [mm]."""
-        self._validate_chunks('iwp')
         ds = self._ds
         grid = self.grid
 
@@ -419,7 +416,6 @@ class ThermoMixin:
     @property
     def crh(self) -> xr.DataArray:
         """Column relative humidity [1]."""
-        self._validate_chunks('crh')
         ds = self._ds
         grid = self.grid
 

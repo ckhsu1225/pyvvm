@@ -14,7 +14,7 @@ import numpy as np
 import xarray as xr
 from . import formulas as F
 from .constants import Cp_d, g
-from .utils import take_along_vertical
+from .._utils import take_along_vertical
 
 __all__ = [
     'build_thes_lut',

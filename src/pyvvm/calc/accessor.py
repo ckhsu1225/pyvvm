@@ -17,10 +17,13 @@ import xgcm
 import warnings
 import xarray as xr
 from collections.abc import Sequence
-from typing import Hashable, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from .dynamics import DynamicsMixin
 from .thermodynamics import ThermoMixin
+
+if TYPE_CHECKING:
+    from ..tc.accessor import TCAccessor
 
 __all__ = [
     'VVMAccessor',
@@ -138,45 +141,10 @@ class VVMAccessor(ThermoMixin, DynamicsMixin):
             'inputs': ('th', 'qv', 'qc', 'qi', 'qr'),
             'reason': 'vertical derivative uses core Z axis',
         },
-        'cwv': {
-            'axes': ('Z',),
-            'inputs': ('qv',),
-            'reason': 'column integral over Z axis',
-        },
-        'lwp': {
-            'axes': ('Z',),
-            'inputs': ('qc', 'qr'),
-            'reason': 'column integral over Z axis',
-        },
-        'iwp': {
-            'axes': ('Z',),
-            'inputs': ('qi',),
-            'reason': 'column integral over Z axis',
-        },
-        'crh': {
-            'axes': ('Z',),
-            'inputs': ('qv', 'th'),
-            'reason': 'column integral over Z axis',
-        },
         'cape_cin': {
             'axes': ('Z',),
             'inputs': ('th', 'qv'),
             'reason': 'apply_ufunc uses zc as core dimension',
-        },
-        'ivtu': {
-            'axes': ('Z',),
-            'inputs': ('u', 'qv'),
-            'reason': 'column integral over Z axis',
-        },
-        'ivtv': {
-            'axes': ('Z',),
-            'inputs': ('v', 'qv'),
-            'reason': 'column integral over Z axis',
-        },
-        'ivt': {
-            'axes': ('Z',),
-            'inputs': ('u', 'v', 'qv'),
-            'reason': 'column integral over Z axis',
         },
         'psi': {
             'axes': ('X', 'Y'),
@@ -184,16 +152,30 @@ class VVMAccessor(ThermoMixin, DynamicsMixin):
             'reason': 'apply_ufunc uses horizontal core dimensions',
         },
         'pv': {
-            'axes': ('X', 'Y', 'Z'),
+            'axes': ('Z',),
             'inputs': ('th', 'zeta', 'eta', 'xi'),
-            'reason': '3D derivatives require full XYZ axes',
+            'reason': 'vertical derivative uses core Z axis',
         },
     }
 
     def __init__(self, xarray_obj: xr.Dataset) -> None:
         self._ds = xarray_obj
         self._grid: xgcm.Grid | None = None
-        self._mask_cache: dict[Hashable, xr.DataArray] = {}
+        self._tc: TCAccessor | None = None
+
+    @property
+    def tc(self) -> 'TCAccessor':
+        """
+        Tropical-cyclone diagnostics namespace.
+
+        Examples
+        --------
+        >>> ds.vvm.tc.find_center(field='psi', method='centroid')
+        """
+        if self._tc is None:
+            from ..tc.accessor import TCAccessor
+            self._tc = TCAccessor(self)
+        return self._tc
 
     def validate_chunks(
         self,
@@ -206,7 +188,7 @@ class VVMAccessor(ThermoMixin, DynamicsMixin):
         Parameters
         ----------
         diagnostics : str or sequence[str]
-            Diagnostic name(s), e.g. ``'psi'`` or ``['n2', 'crh']``.
+            Diagnostic name(s), e.g. ``'psi'`` or ``['n2', 'pv']``.
         mode : {'raise', 'warn', 'ignore'}, optional
             - ``'raise'``: raise ValueError on violations (default)
             - ``'warn'``: emit warnings and continue

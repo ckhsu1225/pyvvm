@@ -112,12 +112,12 @@ class VVMDataLoader:
     def _scan_available_steps(self) -> list[int]:
         """Scan archive directory to find all available time step indices."""
         # Use Dynamic files for scanning (assuming they always exist)
-        # Filename format: case_name.L.Dynamic-000000.nc
+        # Filename format: <prefix>.L.Dynamic-000000.nc
         archive_dir = self.case_path / 'archive'
-        pattern = re.compile(rf"{re.escape(self.case_name)}\.L\.Dynamic-(\d+)\.nc")
+        pattern = re.compile(r"^.+\.L\.Dynamic-(\d+)\.nc$")
 
         steps: list[int] = []
-        for p in archive_dir.glob(f"{self.case_name}.L.Dynamic-*.nc"):
+        for p in archive_dir.glob("*.L.Dynamic-*.nc"):
             match = pattern.search(p.name)
             if match:
                 steps.append(int(match.group(1)))
@@ -177,16 +177,16 @@ class VVMDataLoader:
     def _open_netcdf_files(self) -> xr.Dataset:
         """Open and merge NetCDF files for all selected steps and groups."""
         datasets: list[xr.Dataset] = []
+        archive_dir = self.case_path / 'archive'
 
         for group in self.groups:
             # Build explicit file list for selected steps
             file_paths: list[str] = []
             for step in self.selected_steps:
-                # Filename format: 000000 (6 digits)
-                fname = f"{self.case_name}.{group}-{step:06d}.nc"
-                fpath = self.case_path / 'archive' / fname
-                if fpath.exists():
-                    file_paths.append(str(fpath))
+                # Match any prefix: <prefix>.{group}-000000.nc
+                matches = sorted(archive_dir.glob(f"*.{group}-{step:06d}.nc"))
+                if matches:
+                    file_paths.append(str(matches[0]))
 
             if not file_paths:
                 continue
@@ -226,6 +226,12 @@ class VVMDataLoader:
         ds.attrs['coriolis_parameter'] = self.config.get('f')        # Coriolis parameter (None if not f-plane)
         ds.attrs['reference_latitude'] = self.config.get('RLAT')     # Reference latitude
         ds.attrs['reference_longitude'] = self.config.get('RLON')    # Reference longitude
+
+        # Keep lightweight loader metadata so downstream accessors can
+        # reconstruct a dedicated dataset view (e.g., center-finding chunks).
+        ds.attrs['vvm_case_path'] = str(self.case_path)
+        ds.attrs['vvm_selected_steps'] = ','.join(str(s) for s in self.selected_steps)
+        ds.attrs['vvm_groups'] = ','.join(self.groups)
         return ds
 
     # =========================================================================

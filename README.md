@@ -47,6 +47,9 @@ loader = pyvvm.VVMDataLoader('/path/to/case', steps=slice(0, 100, 10))
 
 # Load with custom chunking
 loader = pyvvm.VVMDataLoader('/path/to/case', chunks={'time': 1, 'lev': -1})
+
+# Load specific variable groups
+loader = pyvvm.VVMDataLoader('/path/to/case', groups=['L.Dynamic'])
 ```
 
 ### Thermodynamic Diagnostics
@@ -74,7 +77,7 @@ Access via `ds.vvm.<property>`:
 | `lwp` | Liquid water path | mm |
 | `iwp` | Ice water path | mm |
 | `crh` | Column relative humidity | 1 |
-| `cape_cin` | Convective available potential energy and convective inhibition | J/kg |
+| `cape_cin` | CAPE and CIN | J/kg |
 
 ### Dynamics Diagnostics
 
@@ -98,6 +101,85 @@ u_masked = ds.vvm.mask(ds['u'])
 th_masked = ds.vvm.masked.th
 thv_masked = ds.vvm.masked.thv
 ```
+
+### Tropical Cyclone Analysis
+
+TC-specific diagnostics are accessed via `ds.vvm.tc`:
+
+```python
+# 1. Find TC center (required first step)
+track = ds.vvm.tc.find_center(field='psi', method='extremum', level=1000.0)
+
+# 2. Compute TC wind components
+vr = ds.vvm.tc.vr    # Radial wind (positive outward)
+vt = ds.vvm.tc.vt    # Tangential wind (positive cyclonic)
+
+# 3. Azimuthal mean of any variable
+th_az = ds.vvm.tc.azimuth('th')          # By variable name
+th_az = ds.vvm.tc.azimuth(ds['th'])      # By DataArray
+
+# 4. Wind intensity metrics (vmax, rmw, threshold radii)
+ws = ds.vvm.ws.persist()
+metrics = ds.vvm.tc.wind_metrics(ws)
+# Returns: vmax, rmw, r17, r25, r33
+
+# 5. Axisymmetric diagnostics (properties)
+aam = ds.vvm.tc.aam   # Absolute angular momentum
+i2  = ds.vvm.tc.i2    # Inertial stability
+psi = ds.vvm.tc.psi   # Mass streamfunction
+```
+
+#### Center Finding
+
+```python
+# Streamfunction-based (default, robust)
+track = ds.vvm.tc.find_center(field='psi', method='extremum', level=1000.0)
+
+# Vorticity-based methods
+track = ds.vvm.tc.find_center(field='zeta', method='centroid')
+track = ds.vvm.tc.find_center(field='zeta', method='extremum')
+
+# Custom smoothing and search radius
+track = ds.vvm.tc.find_center(field='zeta', method='centroid', sigma=50e3, radius=100e3)
+
+# Level range averaging
+track = ds.vvm.tc.find_center(field='zeta', method='centroid', level=(500.0, 3000.0))
+```
+
+#### Azimuthal Mean
+
+```python
+# Configure default radius and resolution
+ds.vvm.tc.set_params(radius=300e3, dr=2e3)
+
+# By variable name (raw or computed)
+th_az = ds.vvm.tc.azimuth('th')
+vt_az = ds.vvm.tc.azimuth('vt')
+
+# With terrain masking
+th_az_masked = ds.vvm.tc.masked.azimuth('th')
+```
+
+#### Wind Metrics
+
+```python
+# Compute wind speed and persist for performance
+ws = ds.vvm.ws.persist()
+
+# Compute metrics (vmax, rmw, threshold radii)
+metrics = ds.vvm.tc.wind_metrics(ws)
+
+# Select levels before passing
+ws_1km = ds.vvm.ws.sel(zc=1000, method='nearest').persist()
+metrics_1km = ds.vvm.tc.wind_metrics(ws_1km)
+
+# Custom thresholds
+metrics = ds.vvm.tc.wind_metrics(ws, thresholds=(15.0, 25.0, 35.0))
+```
+
+#### Performance Tips
+
+- Center finding automatically loads full-chunk data when needed.
 
 ### Dask Cluster
 
