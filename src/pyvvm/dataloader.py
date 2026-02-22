@@ -250,9 +250,10 @@ class VVMDataLoader:
         ds = self._assign_staggered_coordinates(ds)
         ds = self._add_background_profiles(ds)
         ds = self._set_coordinate_attributes(ds)
-        
-        # Skip ghost layer (zc=0; below surface) which is typically a boundary condition layer
-        ds = ds.isel(zc=slice(1, None))
+
+        # Skip ghost layer (zc=0; below surface) — only for 3-D data
+        if 'zc' in ds.dims:
+            ds = ds.isel(zc=slice(1, None))
         ds = self._add_vertical_level_indices(ds)
 
         return ds
@@ -260,11 +261,11 @@ class VVMDataLoader:
     def _assign_spatial_coordinates(self, ds: xr.Dataset) -> xr.Dataset:
         """
         Rename dimensions and assign spatial coordinate values.
-        
+
         This function:
         1. Saves original xc/yc coordinate values before dropping
         2. Drops existing coordinate variables (xc, yc, zc, zb)
-        3. Renames dimensions (lon->xc, lat->yc, lev->zc)
+        3. Renames dimensions (lon->xc, lat->yc, lev->zc if present)
         4. Assigns proper coordinate values for center and edge grids
         """
         # IMPORTANT: Save original coordinate values BEFORE dropping
@@ -274,20 +275,21 @@ class VVMDataLoader:
         # Drop existing coordinate variables that will be replaced
         ds = ds.drop_vars(['zc', 'zb', 'yc', 'xc'], errors='ignore')
 
-        # Rename dimensions to center-grid convention
-        ds = ds.rename({'lon': 'xc', 'lat': 'yc', 'lev': 'zc'})
-
-        # Vertical coordinate values from fort.98
-        df_profile = self.profile_data['profile']
-        n_lev = self.config.get('NK2')
-        zc_vals = df_profile['ZT'].values[:n_lev]  # Thermodynamic height
+        # Rename dimensions — only rename lev if it exists (surface data has no lev)
+        rename_map = {'lon': 'xc', 'lat': 'yc'}
+        if 'lev' in ds.dims:
+            rename_map['lev'] = 'zc'
+        ds = ds.rename(rename_map)
 
         # Assign center coordinates
-        coords_assign = {
+        coords_assign: dict = {
             'xc': (['xc'], xc_vals),
             'yc': (['yc'], yc_vals),
-            'zc': (['zc'], zc_vals),
         }
+        if 'zc' in ds.dims:
+            df_profile = self.profile_data['profile']
+            n_lev = self.config.get('NK2')
+            coords_assign['zc'] = (['zc'], df_profile['ZT'].values[:n_lev])
         ds = ds.assign_coords(coords_assign)
 
         return ds
@@ -297,22 +299,23 @@ class VVMDataLoader:
         dx = self.config.get('DX')
         dy = self.config.get('DYNEW')
 
-        xb_vals = ds['xc'].values + dx / 2.0
-        yb_vals = ds['yc'].values + dy / 2.0
-
-        df_profile = self.profile_data['profile']
-        n_lev = self.config.get('NK2')
-        zb_vals = df_profile['ZZ'].values[:n_lev]  # Interface height
-        dz = np.append(0, np.diff(zb_vals))  # Interface thickness (set buttom to 0)
-
-        coords_assign = {
-            'xb': (['xb'], xb_vals),
-            'yb': (['yb'], yb_vals),
-            'zb': (['zb'], zb_vals),
+        coords_assign: dict = {
             'dx': dx,
             'dy': dy,
-            'dz': (['zc'], dz),
         }
+        if 'xb' in ds.dims:
+            coords_assign['xb'] = (['xb'], ds['xc'].values + dx / 2.0)
+        if 'yb' in ds.dims:
+            coords_assign['yb'] = (['yb'], ds['yc'].values + dy / 2.0)
+
+        if 'zb' in ds.dims:
+            df_profile = self.profile_data['profile']
+            n_lev = self.config.get('NK2')
+            zb_vals = df_profile['ZZ'].values[:n_lev]  # Interface height
+            dz = np.append(0, np.diff(zb_vals))  # Interface thickness (set bottom to 0)
+            coords_assign['zb'] = (['zb'], zb_vals)
+            coords_assign['dz'] = (['zc'], dz)
+
         return ds.assign_coords(coords_assign)
 
     def _apply_cgrid_staggering(self, ds: xr.Dataset) -> xr.Dataset:
@@ -327,18 +330,23 @@ class VVMDataLoader:
 
     def _add_background_profiles(self, ds: xr.Dataset) -> xr.Dataset:
         """Add background thermodynamic profiles as coordinates."""
+        if 'zc' not in ds.dims:
+            return ds
+
         df_profile = self.profile_data['profile']
-        df_rhoz = self.profile_data['rhoz']
         n_lev = self.config.get('NK2')
 
-        coords_assign = {
+        coords_assign: dict = {
             'rho':    (['zc'], df_profile['RHO'].values[:n_lev]),
-            'rhoz':   (['zb'], df_rhoz['RHOZ'].values[:n_lev]),
             'thbar':  (['zc'], df_profile['THBAR'].values[:n_lev]),
             'pbar':   (['zc'], df_profile['PBAR'].values[:n_lev]),
             'pibar':  (['zc'], df_profile['PIBAR'].values[:n_lev]),
             'qvbar':  (['zc'], df_profile['QVBAR'].values[:n_lev]),
         }
+        if 'zb' in ds.dims:
+            df_rhoz = self.profile_data['rhoz']
+            coords_assign['rhoz'] = (['zb'], df_rhoz['RHOZ'].values[:n_lev])
+
         return ds.assign_coords(coords_assign)
 
     def _add_vertical_level_indices(self, ds: xr.Dataset) -> xr.Dataset:
@@ -379,83 +387,29 @@ class VVMDataLoader:
 
     def _set_coordinate_attributes(self, ds: xr.Dataset) -> xr.Dataset:
         """Set metadata attributes (long_name, units, axis) for all coordinates."""
-        # Horizontal coordinates
-        ds.xc.attrs.update({
-            'long_name': 'x-coordinate at cell center',
-            'units': 'm',
-            'axis': 'X',
-        })
-        ds.xb.attrs.update({
-            'long_name': 'x-coordinate at cell edge',
-            'units': 'm',
-            'axis': 'X',
-            'c_grid_axis_shift': 0.5,
-        })
-        ds.yc.attrs.update({
-            'long_name': 'y-coordinate at cell center',
-            'units': 'm',
-            'axis': 'Y',
-        })
-        ds.yb.attrs.update({
-            'long_name': 'y-coordinate at cell edge',
-            'units': 'm',
-            'axis': 'Y',
-            'c_grid_axis_shift': 0.5,
-        })
-
-        # Vertical coordinates
-        ds.zc.attrs.update({
-            'long_name': 'height at thermodynamic levels',
-            'units': 'm',
-            'axis': 'Z',
-            'positive': 'up',
-        })
-        ds.zb.attrs.update({
-            'long_name': 'height at vertical interfaces',
-            'units': 'm',
-            'axis': 'Z',
-            'positive': 'up',
-            'c_grid_axis_shift': 0.5,
-        })
-
-        # Distance metrics
-        ds.dx.attrs.update({
-            'long_name': 'grid spacing in x-direction',
-            'units': 'm',
-        })
-        ds.dy.attrs.update({
-            'long_name': 'grid spacing in y-direction',
-            'units': 'm',
-        })
-        ds.dz.attrs.update({
-            'long_name': 'layer thickness in z-direction',
-            'units': 'm',
-        })
-
-        # Background profile coordinates
-        ds.rho.attrs.update({
-            'long_name': 'base state density at cell center',
-            'units': 'kg m-3',
-        })
-        ds.rhoz.attrs.update({
-            'long_name': 'base state density at vertical interfaces',
-            'units': 'kg m-3',
-        })
-        ds.thbar.attrs.update({
-            'long_name': 'base state potential temperature',
-            'units': 'K',
-        })
-        ds.pbar.attrs.update({
-            'long_name': 'base state pressure',
-            'units': 'Pa',
-        })
-        ds.pibar.attrs.update({
-            'long_name': 'base state Exner function',
-            'units': '1',
-        })
-        ds.qvbar.attrs.update({
-            'long_name': 'base state water vapor mixing ratio',
-            'units': 'kg kg-1',
-        })
+        _COORD_ATTRS = {
+            # Horizontal
+            'xc':    {'long_name': 'x-coordinate at cell center', 'units': 'm', 'axis': 'X'},
+            'xb':    {'long_name': 'x-coordinate at cell edge', 'units': 'm', 'axis': 'X', 'c_grid_axis_shift': 0.5},
+            'yc':    {'long_name': 'y-coordinate at cell center', 'units': 'm', 'axis': 'Y'},
+            'yb':    {'long_name': 'y-coordinate at cell edge', 'units': 'm', 'axis': 'Y', 'c_grid_axis_shift': 0.5},
+            # Vertical
+            'zc':    {'long_name': 'height at thermodynamic levels', 'units': 'm', 'axis': 'Z', 'positive': 'up'},
+            'zb':    {'long_name': 'height at vertical interfaces', 'units': 'm', 'axis': 'Z', 'positive': 'up', 'c_grid_axis_shift': 0.5},
+            # Distance metrics
+            'dx':    {'long_name': 'grid spacing in x-direction', 'units': 'm'},
+            'dy':    {'long_name': 'grid spacing in y-direction', 'units': 'm'},
+            'dz':    {'long_name': 'layer thickness in z-direction', 'units': 'm'},
+            # Background profiles
+            'rho':   {'long_name': 'base state density at cell center', 'units': 'kg m-3'},
+            'rhoz':  {'long_name': 'base state density at vertical interfaces', 'units': 'kg m-3'},
+            'thbar': {'long_name': 'base state potential temperature', 'units': 'K'},
+            'pbar':  {'long_name': 'base state pressure', 'units': 'Pa'},
+            'pibar': {'long_name': 'base state Exner function', 'units': '1'},
+            'qvbar': {'long_name': 'base state water vapor mixing ratio', 'units': 'kg kg-1'},
+        }
+        for name, attrs in _COORD_ATTRS.items():
+            if name in ds.coords:
+                ds[name].attrs.update(attrs)
 
         return ds
