@@ -303,18 +303,19 @@ class VVMDataLoader:
             'dx': dx,
             'dy': dy,
         }
-        if 'xb' in ds.dims:
+
+        # Staggered coords are grid geometry — create whenever the center dim exists.
+        if 'xc' in ds.dims:
             coords_assign['xb'] = (['xb'], ds['xc'].values + dx / 2.0)
-        if 'yb' in ds.dims:
+        if 'yc' in ds.dims:
             coords_assign['yb'] = (['yb'], ds['yc'].values + dy / 2.0)
 
-        if 'zb' in ds.dims:
+        if 'zc' in ds.dims:
             df_profile = self.profile_data['profile']
             n_lev = self.config.get('NK2')
-            zb_vals = df_profile['ZZ'].values[:n_lev]  # Interface height
-            dz = np.append(0, np.diff(zb_vals))  # Interface thickness (set bottom to 0)
+            zb_vals = df_profile['ZZ'].values[:n_lev]
             coords_assign['zb'] = (['zb'], zb_vals)
-            coords_assign['dz'] = (['zc'], dz)
+            coords_assign['dz'] = (['zc'], np.append(0, np.diff(zb_vals)))
 
         return ds.assign_coords(coords_assign)
 
@@ -334,19 +335,17 @@ class VVMDataLoader:
             return ds
 
         df_profile = self.profile_data['profile']
+        df_rhoz = self.profile_data['rhoz']
         n_lev = self.config.get('NK2')
 
         coords_assign: dict = {
             'rho':    (['zc'], df_profile['RHO'].values[:n_lev]),
+            'rhoz':   (['zb'], df_rhoz['RHOZ'].values[:n_lev]),
             'thbar':  (['zc'], df_profile['THBAR'].values[:n_lev]),
             'pbar':   (['zc'], df_profile['PBAR'].values[:n_lev]),
             'pibar':  (['zc'], df_profile['PIBAR'].values[:n_lev]),
             'qvbar':  (['zc'], df_profile['QVBAR'].values[:n_lev]),
         }
-        if 'zb' in ds.dims:
-            df_rhoz = self.profile_data['rhoz']
-            coords_assign['rhoz'] = (['zb'], df_rhoz['RHOZ'].values[:n_lev])
-
         return ds.assign_coords(coords_assign)
 
     def _add_vertical_level_indices(self, ds: xr.Dataset) -> xr.Dataset:
