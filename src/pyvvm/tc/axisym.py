@@ -170,6 +170,23 @@ def _reduce_add(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return a + b
 
 
+def _chunk_bincount(
+    block: np.ndarray,
+    bx: np.ndarray,
+    by: np.ndarray,
+    cx: float,
+    cy: float,
+    Lx: float,
+    Ly: float,
+    dr: float,
+    nbins: int,
+) -> np.ndarray:
+    """Partial bincount on a single dask chunk (squeezes leading time dim)."""
+    if block.ndim == 4:
+        block = block[0]  # (1, nz, ny_chunk, nx_chunk) → (nz, ny_chunk, nx_chunk)
+    return _bincount_sum_count(block, bx, by, cx, cy, Lx, Ly, dr, nbins)
+
+
 # =============================================================================
 # Azimuthal averaging
 # =============================================================================
@@ -287,7 +304,30 @@ def axisym_mean(
     y_coords = np.asarray(da_work.coords[y_dim].values, dtype=np.float64)
     nz = da_work.sizes[z_dim]
 
-    # Build per-time delayed stats (nz,2,nbins), reduced inside dask graph
+    # Ensure input is a dask array for to_delayed().
+    if not isinstance(darr, da.Array):
+        darr = da.from_array(darr, chunks=(1, nz, ny, nx))
+
+    if darr.chunks[1] != (nz,):
+        raise ValueError(
+            f"axisym_mean requires the vertical dimension as a single chunk "
+            f"(lev: -1), but got z chunks = {darr.chunks[1]}."
+        )
+
+    # Pre-compute chunk boundaries.
+    chunks_y = darr.chunks[2]
+    chunks_x = darr.chunks[3]
+    y_offsets = np.concatenate([[0], np.cumsum(chunks_y)])
+    x_offsets = np.concatenate([[0], np.cumsum(chunks_x)])
+
+    # Extract pre-existing Delayed objects — one per chunk, no serialization.
+    # This is the key optimisation: dask.delayed(func)(delayed_obj) only
+    # creates a dependency edge (microseconds) instead of serialising the
+    # entire sub-graph (~0.4 s with dask array slices).
+    delayed_chunks = darr.to_delayed(optimize_graph=False)
+    # shape: (nt, 1, n_yc, n_xc) array of Delayed
+
+    # Build per-time delayed stats via per-chunk partial bincount.
     time_tasks: list[dask.delayed] = []
     dr_f = float(dr)
     nbins_i = int(nbins)
@@ -301,22 +341,33 @@ def axisym_mean(
         xs = _periodic_slices(cx_idx, half_x, nx)
         ys = _periodic_slices(cy_idx, half_y, ny)
 
-        block_tasks: list[dask.delayed] = []
-
+        # Map array-index slices → set of (j, i) chunk indices.
+        chunk_set: set[tuple[int, int]] = set()
         for ysl in ys:
+            j0 = int(np.searchsorted(y_offsets, ysl.start, side='right') - 1)
+            j1 = int(np.searchsorted(y_offsets, ysl.stop - 1, side='right') - 1)
             for xsl in xs:
-                block = darr[t, :, ysl, xsl]  # dask array (nz, sub_ny, sub_nx)
-                bx = x_coords[xsl]
-                by = y_coords[ysl]
+                i0 = int(np.searchsorted(x_offsets, xsl.start, side='right') - 1)
+                i1 = int(np.searchsorted(x_offsets, xsl.stop - 1, side='right') - 1)
+                for j in range(j0, j1 + 1):
+                    for i in range(i0, i1 + 1):
+                        chunk_set.add((j, i))
 
-                task = dask.delayed(_bincount_sum_count)(
-                    block, bx, by,
-                    cx, cy, Lx, Ly,
-                    dr_f, nbins_i,
-                )
-                block_tasks.append(task)
+        # Create partial bincount tasks from pre-existing Delayed objects.
+        block_tasks: list[dask.delayed] = []
+        for j, i in chunk_set:
+            bx = x_coords[int(x_offsets[i]):int(x_offsets[i + 1])]
+            by = y_coords[int(y_offsets[j]):int(y_offsets[j + 1])]
 
-        # Tree-reduce sum/count across blocks inside dask graph
+            task = dask.delayed(_chunk_bincount)(
+                delayed_chunks[t, 0, j, i],
+                bx, by,
+                cx, cy, Lx, Ly,
+                dr_f, nbins_i,
+            )
+            block_tasks.append(task)
+
+        # Tree-reduce sum/count across blocks inside dask graph.
         total = block_tasks[0]
         for bt in block_tasks[1:]:
             total = dask.delayed(_reduce_add)(total, bt)
