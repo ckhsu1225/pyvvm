@@ -371,7 +371,7 @@ def _find_centroid_iterative(
             "Defaulting to domain center.",
             stacklevel=2,
         )
-        return np.array([nx / 2.0, ny / 2.0])
+        return np.array([(nx - 1) / 2.0, (ny - 1) / 2.0])
     
     # Initial guess
     if rough_center_idx is None:
@@ -479,7 +479,7 @@ def _find_extremum(
             "Defaulting to domain center.",
             stacklevel=2,
         )
-        return np.array([nx / 2.0, ny / 2.0])
+        return np.array([(nx - 1) / 2.0, (ny - 1) / 2.0])
     
     if find_max:
         flat_idx = np.argmax(var)
