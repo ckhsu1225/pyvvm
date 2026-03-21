@@ -13,6 +13,7 @@ import xarray as xr
 import dask
 import dask.array as da
 from typing import Sequence
+from dataclasses import dataclass
 
 from ._utils import wrap_min, resolve_track
 from .._utils import assign_compatible_coords
@@ -24,7 +25,7 @@ __all__ = [
 
 
 # =============================================================================
-# Helpers
+# General helpers
 # =============================================================================
 
 
@@ -140,26 +141,29 @@ def _bincount_sum_count(
     rbin2d = np.floor(np.sqrt(r2) / dr).astype(np.int32)
 
     valid_flat = ((rbin2d >= 0) & (rbin2d < nbins)).ravel()
-    if not valid_flat.any():
+    valid_idx = np.flatnonzero(valid_flat)
+    if valid_idx.size == 0:
         return out
 
-    bins_valid = rbin2d.ravel()[valid_flat]  # (npts_valid,)
+    bins_valid = rbin2d.ravel()[valid_idx]  # (npts_valid,)
+    count_all = np.bincount(bins_valid, minlength=nbins)
 
-    # Vectorized: extract all z-levels at valid points → (nz, npts_valid)
-    data_valid = block_data.reshape(nz, -1)[:, valid_flat]
-    finite_mask = np.isfinite(data_valid)  # (nz, npts_valid)
+    # Gather one vertical level at a time to avoid materializing a full
+    # (nz, npts_valid) temporary array and its finite mask.
+    flat_block = block_data.reshape(nz, -1)
 
     for k in range(nz):
-        fm = finite_mask[k]
-        if not fm.any():
+        level = flat_block[k, valid_idx]
+        finite_mask = np.isfinite(level)
+        if not finite_mask.any():
             continue
-        if fm.all():
-            # Fast path: no NaN at this level
-            out[k, 0] = np.bincount(bins_valid, weights=data_valid[k], minlength=nbins)
-            out[k, 1] = np.bincount(bins_valid, minlength=nbins)
+        if finite_mask.all():
+            # Fast path: no NaN at this level, so the count is reusable.
+            out[k, 0] = np.bincount(bins_valid, weights=level, minlength=nbins)
+            out[k, 1] = count_all
         else:
-            b = bins_valid[fm]
-            out[k, 0] = np.bincount(b, weights=data_valid[k, fm], minlength=nbins)
+            b = bins_valid[finite_mask]
+            out[k, 0] = np.bincount(b, weights=level[finite_mask], minlength=nbins)
             out[k, 1] = np.bincount(b, minlength=nbins)
 
     return out
@@ -188,8 +192,223 @@ def _chunk_bincount(
 
 
 # =============================================================================
-# Azimuthal averaging
+# Axisym planning helpers
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class _AxisymLayout:
+    da_work: xr.DataArray
+    has_time: bool
+    added_z: bool
+    z_dim: str
+    y_dim: str
+    x_dim: str
+    nt: int
+    nz: int
+    nx: int
+    ny: int
+    Lx: float
+    Ly: float
+    dr: float
+    nbins: int
+    r_centers: np.ndarray
+    half_x: int
+    half_y: int
+    x_coords: np.ndarray
+    y_coords: np.ndarray
+    x_offsets: np.ndarray
+    y_offsets: np.ndarray
+    cx_all: np.ndarray
+    cy_all: np.ndarray
+    cx_idx_all: np.ndarray
+    cy_idx_all: np.ndarray
+    delayed_chunks: np.ndarray
+
+
+def _normalize_axisym_input(
+    da_in: xr.DataArray,
+) -> tuple[xr.DataArray, bool, str, bool, str, str]:
+    """Normalize *da_in* so the working array always has time and z dims."""
+    has_time = "time" in da_in.dims
+    da_work = da_in if has_time else da_in.expand_dims("time")
+
+    z_dim = _infer_dim(da_work, ("zc", "zb"), optional=True)
+    added_z = z_dim is None
+    if added_z:
+        z_dim = _unique_dim_name(da_work, "__z_dummy__")
+        da_work = da_work.expand_dims(z_dim)
+
+    y_dim = _infer_dim(da_work, ("yc", "yb"))
+    x_dim = _infer_dim(da_work, ("xc", "xb"))
+
+    return da_work, has_time, z_dim, added_z, y_dim, x_dim
+
+
+def _prepare_axisym_layout(
+    da_in: xr.DataArray,
+    track: xr.Dataset,
+    *,
+    r_max: float,
+    dr: float,
+) -> _AxisymLayout:
+    """Pre-compute metadata, chunk layout, and track indices for axisym averaging."""
+    da_work, has_time, z_dim, added_z, y_dim, x_dim = _normalize_axisym_input(da_in)
+
+    if "dx" not in da_work.coords or "dy" not in da_work.coords:
+        raise ValueError("da_in must have scalar coords 'dx' and 'dy' (meters).")
+    dx = float(da_work.coords["dx"].values)
+    dy = float(da_work.coords["dy"].values)
+
+    nx = da_work.sizes[x_dim]
+    ny = da_work.sizes[y_dim]
+    Lx = nx * dx
+    Ly = ny * dy
+
+    nbins = int(np.floor(r_max / dr))
+    if nbins <= 0:
+        raise ValueError(f"nbins must be > 0, got nbins={nbins}. Check r_max/dr.")
+    r_centers = (np.arange(nbins) + 0.5) * dr
+
+    half_x = min(int(np.ceil(r_max / dx)), nx // 2)
+    half_y = min(int(np.ceil(r_max / dy)), ny // 2)
+
+    nt = da_work.sizes["time"]
+    cx_all, cy_all = resolve_track(track, da_work)
+    if not (np.isfinite(cx_all).all() and np.isfinite(cy_all).all()):
+        raise ValueError(
+            "Track contains NaN or Inf center coordinates. "
+            "Ensure all center positions are finite."
+        )
+
+    # Convert center coords to integer indices for slicing.
+    x0 = float(da_work.coords[x_dim].values[0])
+    y0 = float(da_work.coords[y_dim].values[0])
+    cx_idx_all = (np.rint((cx_all - x0) / dx).astype(np.int64) % nx)
+    cy_idx_all = (np.rint((cy_all - y0) / dy).astype(np.int64) % ny)
+
+    # Pre-extract dask array and numpy coords to avoid xarray overhead in loop.
+    darr = da_work.transpose("time", z_dim, y_dim, x_dim).data
+    x_coords = np.asarray(da_work.coords[x_dim].values, dtype=np.float64)
+    y_coords = np.asarray(da_work.coords[y_dim].values, dtype=np.float64)
+    nz = da_work.sizes[z_dim]
+
+    # Ensure input is a dask array for to_delayed().
+    if not isinstance(darr, da.Array):
+        darr = da.from_array(darr, chunks=(1, nz, ny, nx))
+
+    if darr.chunks[1] != (nz,):
+        raise ValueError(
+            f"axisym_mean requires the vertical dimension as a single chunk "
+            f"(lev: -1), but got z chunks = {darr.chunks[1]}."
+        )
+
+    # Pre-compute chunk boundaries.
+    chunks_y = darr.chunks[2]
+    chunks_x = darr.chunks[3]
+    y_offsets = np.concatenate([[0], np.cumsum(chunks_y)])
+    x_offsets = np.concatenate([[0], np.cumsum(chunks_x)])
+
+    # Extract pre-existing Delayed objects — one per chunk, no serialization.
+    delayed_chunks = darr.to_delayed(optimize_graph=False)
+
+    return _AxisymLayout(
+        da_work=da_work,
+        has_time=has_time,
+        added_z=added_z,
+        z_dim=z_dim,
+        y_dim=y_dim,
+        x_dim=x_dim,
+        nt=nt,
+        nz=nz,
+        nx=nx,
+        ny=ny,
+        Lx=Lx,
+        Ly=Ly,
+        dr=float(dr),
+        nbins=int(nbins),
+        r_centers=r_centers,
+        half_x=half_x,
+        half_y=half_y,
+        x_coords=x_coords,
+        y_coords=y_coords,
+        x_offsets=x_offsets,
+        y_offsets=y_offsets,
+        cx_all=cx_all,
+        cy_all=cy_all,
+        cx_idx_all=cx_idx_all,
+        cy_idx_all=cy_idx_all,
+        delayed_chunks=delayed_chunks,
+    )
+
+
+def _chunk_set_for_time(layout: _AxisymLayout, t: int) -> list[tuple[int, int]]:
+    """Return the chunk indices needed for time step *t*."""
+    xs = _periodic_slices(int(layout.cx_idx_all[t]), layout.half_x, layout.nx)
+    ys = _periodic_slices(int(layout.cy_idx_all[t]), layout.half_y, layout.ny)
+
+    # Map array-index slices -> set of (j, i) chunk indices.
+    chunk_set: set[tuple[int, int]] = set()
+    for ysl in ys:
+        j0 = int(np.searchsorted(layout.y_offsets, ysl.start, side="right") - 1)
+        j1 = int(np.searchsorted(layout.y_offsets, ysl.stop - 1, side="right") - 1)
+        for xsl in xs:
+            i0 = int(np.searchsorted(layout.x_offsets, xsl.start, side="right") - 1)
+            i1 = int(np.searchsorted(layout.x_offsets, xsl.stop - 1, side="right") - 1)
+            for j in range(j0, j1 + 1):
+                for i in range(i0, i1 + 1):
+                    chunk_set.add((j, i))
+
+    return sorted(chunk_set)
+
+
+def _build_time_task(layout: _AxisymLayout, t: int):
+    """Build the delayed sum/count reduction for one time step."""
+    cx = float(layout.cx_all[t])
+    cy = float(layout.cy_all[t])
+
+    # Create partial bincount tasks from pre-existing Delayed objects.
+    block_tasks: list[dask.delayed] = []
+    for j, i in _chunk_set_for_time(layout, t):
+        bx = layout.x_coords[int(layout.x_offsets[i]):int(layout.x_offsets[i + 1])]
+        by = layout.y_coords[int(layout.y_offsets[j]):int(layout.y_offsets[j + 1])]
+
+        task = dask.delayed(_chunk_bincount)(
+            layout.delayed_chunks[t, 0, j, i],
+            bx,
+            by,
+            cx,
+            cy,
+            layout.Lx,
+            layout.Ly,
+            layout.dr,
+            layout.nbins,
+        )
+        block_tasks.append(task)
+
+    # Tree-reduce sum/count across blocks inside dask graph.
+    total = block_tasks[0]
+    for bt in block_tasks[1:]:
+        total = dask.delayed(_reduce_add)(total, bt)
+
+    return total
+
+
+def _safe_divide_block(sum_block: np.ndarray, cnt_block: np.ndarray) -> np.ndarray:
+    """Elementwise sum/count divide that preserves NaN for empty bins."""
+    out = np.full(sum_block.shape, np.nan, dtype=np.float64)
+    np.divide(sum_block, cnt_block, out=out, where=cnt_block > 0)
+    return out
+
+
+def _safe_divide(sum_: da.Array, cnt_: da.Array) -> da.Array:
+    """Apply safe blockwise division to dask arrays with matching chunks."""
+    return da.map_blocks(_safe_divide_block, sum_, cnt_, dtype=np.float64)
+
+# =============================================================================
+# Public API
+# =============================================================================
+
 
 def axisym_mean(
     da_in: xr.DataArray,
@@ -248,150 +467,30 @@ def axisym_mean(
     if "x" not in track or "y" not in track:
         raise ValueError("track must contain variables 'x' and 'y'.")
 
-    # Normalize to a working shape that always has both time and z.
-    has_time = "time" in da_in.dims
-    da_work = da_in if has_time else da_in.expand_dims("time")
-
-    z_dim = _infer_dim(da_work, ("zc", "zb"), optional=True)
-    added_z = z_dim is None
-    if added_z:
-        z_dim = _unique_dim_name(da_work, "__z_dummy__")
-        da_work = da_work.expand_dims(z_dim)
-
-    y_dim = _infer_dim(da_work, ("yc", "yb"))
-    x_dim = _infer_dim(da_work, ("xc", "xb"))
-
-    # Scalars
-    if "dx" not in da_work.coords or "dy" not in da_work.coords:
-        raise ValueError("da_in must have scalar coords 'dx' and 'dy' (meters).")
-    dx = float(da_work.coords["dx"].values)
-    dy = float(da_work.coords["dy"].values)
-
-    nx = da_work.sizes[x_dim]
-    ny = da_work.sizes[y_dim]
-    Lx = nx * dx
-    Ly = ny * dy
-
-    # Bin setup
-    nbins = int(np.floor(r_max / dr))
-    if nbins <= 0:
-        raise ValueError(f"nbins must be > 0, got nbins={nbins}. Check r_max/dr.")
-    r_centers = (np.arange(nbins) + 0.5) * dr  # (nbins,)
-
-    # Half-width in grid points for the box window that encloses circle
-    half_x = min(int(np.ceil(r_max / dx)), nx // 2)
-    half_y = min(int(np.ceil(r_max / dy)), ny // 2)
-
-    nt = da_work.sizes["time"]
-    cx_all, cy_all = resolve_track(track, da_work)
-
-    # Validate that all center coordinates are finite.
-    if not (np.isfinite(cx_all).all() and np.isfinite(cy_all).all()):
-        raise ValueError(
-            "Track contains NaN or Inf center coordinates. "
-            "Ensure all center positions are finite."
-        )
-
-    # Convert center coords to integer indices for slicing
-    x0 = float(da_work.coords[x_dim].values[0])
-    y0 = float(da_work.coords[y_dim].values[0])
-    cx_idx_all = (np.rint((cx_all - x0) / dx).astype(np.int64) % nx)
-    cy_idx_all = (np.rint((cy_all - y0) / dy).astype(np.int64) % ny)
-
-    # Pre-extract dask array and numpy coords to avoid xarray overhead in loop.
-    darr = da_work.transpose("time", z_dim, y_dim, x_dim).data  # (nt, nz, ny, nx)
-    x_coords = np.asarray(da_work.coords[x_dim].values, dtype=np.float64)
-    y_coords = np.asarray(da_work.coords[y_dim].values, dtype=np.float64)
-    nz = da_work.sizes[z_dim]
-
-    # Ensure input is a dask array for to_delayed().
-    if not isinstance(darr, da.Array):
-        darr = da.from_array(darr, chunks=(1, nz, ny, nx))
-
-    if darr.chunks[1] != (nz,):
-        raise ValueError(
-            f"axisym_mean requires the vertical dimension as a single chunk "
-            f"(lev: -1), but got z chunks = {darr.chunks[1]}."
-        )
-
-    # Pre-compute chunk boundaries.
-    chunks_y = darr.chunks[2]
-    chunks_x = darr.chunks[3]
-    y_offsets = np.concatenate([[0], np.cumsum(chunks_y)])
-    x_offsets = np.concatenate([[0], np.cumsum(chunks_x)])
-
-    # Extract pre-existing Delayed objects — one per chunk, no serialization.
-    # This is the key optimisation: dask.delayed(func)(delayed_obj) only
-    # creates a dependency edge (microseconds) instead of serialising the
-    # entire sub-graph (~0.4 s with dask array slices).
-    delayed_chunks = darr.to_delayed(optimize_graph=False)
-    # shape: (nt, 1, n_yc, n_xc) array of Delayed
-
-    # Build per-time delayed stats via per-chunk partial bincount.
-    time_tasks: list[dask.delayed] = []
-    dr_f = float(dr)
-    nbins_i = int(nbins)
-
-    for t in range(nt):
-        cx = float(cx_all[t])
-        cy = float(cy_all[t])
-        cx_idx = int(cx_idx_all[t])
-        cy_idx = int(cy_idx_all[t])
-
-        xs = _periodic_slices(cx_idx, half_x, nx)
-        ys = _periodic_slices(cy_idx, half_y, ny)
-
-        # Map array-index slices → set of (j, i) chunk indices.
-        chunk_set: set[tuple[int, int]] = set()
-        for ysl in ys:
-            j0 = int(np.searchsorted(y_offsets, ysl.start, side='right') - 1)
-            j1 = int(np.searchsorted(y_offsets, ysl.stop - 1, side='right') - 1)
-            for xsl in xs:
-                i0 = int(np.searchsorted(x_offsets, xsl.start, side='right') - 1)
-                i1 = int(np.searchsorted(x_offsets, xsl.stop - 1, side='right') - 1)
-                for j in range(j0, j1 + 1):
-                    for i in range(i0, i1 + 1):
-                        chunk_set.add((j, i))
-
-        # Create partial bincount tasks from pre-existing Delayed objects.
-        block_tasks: list[dask.delayed] = []
-        for j, i in chunk_set:
-            bx = x_coords[int(x_offsets[i]):int(x_offsets[i + 1])]
-            by = y_coords[int(y_offsets[j]):int(y_offsets[j + 1])]
-
-            task = dask.delayed(_chunk_bincount)(
-                delayed_chunks[t, 0, j, i],
-                bx, by,
-                cx, cy, Lx, Ly,
-                dr_f, nbins_i,
-            )
-            block_tasks.append(task)
-
-        # Tree-reduce sum/count across blocks inside dask graph.
-        total = block_tasks[0]
-        for bt in block_tasks[1:]:
-            total = dask.delayed(_reduce_add)(total, bt)
-
-        time_tasks.append(total)
+    layout = _prepare_axisym_layout(da_in, track, r_max=r_max, dr=dr)
+    time_tasks = [_build_time_task(layout, t) for t in range(layout.nt)]
 
     # Convert delayed stats into dask.array then stack over time: (time, z, 2, r)
     darr_stats = da.stack(
-        [da.from_delayed(tk, shape=(nz, 2, nbins), dtype=np.float64) for tk in time_tasks],
-        axis=0
+        [
+            da.from_delayed(tk, shape=(layout.nz, 2, layout.nbins), dtype=np.float64)
+            for tk in time_tasks
+        ],
+        axis=0,
     )
 
     # mean = sum / count  -> (time, z, r)
     sum_ = darr_stats[:, :, 0, :]
     cnt_ = darr_stats[:, :, 1, :]
-    mean = sum_ / cnt_
+    mean = _safe_divide(sum_, cnt_)
 
     out = xr.DataArray(
         mean,
-        dims=("time", z_dim, "r"),
+        dims=("time", layout.z_dim, "r"),
         coords={
-            "time": da_work["time"],
-            z_dim: da_work[z_dim],
-            "r": ("r", r_centers),
+            "time": layout.da_work["time"],
+            layout.z_dim: layout.da_work[layout.z_dim],
+            "r": ("r", layout.r_centers),
         },
         name=da_in.name,
         attrs={**da_in.attrs, "r_max": float(r_max), "dr": float(dr)},
@@ -400,9 +499,9 @@ def axisym_mean(
     out = assign_compatible_coords(out, da_in)
 
     # Restore original dimensionality.
-    if added_z:
-        out = out.isel({z_dim: 0}, drop=True)
-    if not has_time:
+    if layout.added_z:
+        out = out.isel({layout.z_dim: 0}, drop=True)
+    if not layout.has_time:
         out = out.isel(time=0)
 
     return out

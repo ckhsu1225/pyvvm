@@ -7,7 +7,6 @@ particularly for working with VVM datasets.
 
 from __future__ import annotations
 
-import numpy as np
 import xarray as xr
 
 
