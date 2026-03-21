@@ -266,6 +266,7 @@ class TCAccessor:
         level: float | tuple[float, float] = 1000.0,
         sigma: float = 50e3,
         radius: float = 100e3,
+        distance_threshold: float | None = None,
     ) -> xr.Dataset:
         """Find and cache TC center track."""
         center_ds = self._ensure_center_source()
@@ -276,6 +277,7 @@ class TCAccessor:
             level=level,
             sigma=sigma,
             radius=radius,
+            distance_threshold=distance_threshold,
         )
         # Compute eagerly to avoid repeated scheduling.
         self._track = track.compute()
