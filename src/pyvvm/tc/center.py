@@ -35,7 +35,7 @@ def find_tc_center(
     level: float | tuple[float, float] = 1000.0,
     sigma: float = 50e3,
     radius: float = 100e3,
-    distance_threshold: float | None = None,
+    distance_threshold: float | tuple[float, float] | None = None,
 ) -> xr.Dataset:
     """
     Find TC center using specified field and method.
@@ -62,10 +62,12 @@ def find_tc_center(
         Gaussian smoothing sigma for 'zeta' field (m). Ignored for 'psi'.
     radius : float
         Search radius for centroid method (m). Ignored for 'extremum'.
-    distance_threshold : float, optional
-        Distance (m) below which the two methods are considered consistent
-        and the psi extremum is preferred. Only used when ``field='adaptive'``.
-        Defaults to ``10 * dx``.
+    distance_threshold : float or tuple[float, float], optional
+        Controls switching between methods. Only used when
+        ``field='adaptive'``.  A tuple ``(low, high)`` enables hysteresis:
+        switch to psi when ``d < low``, back to zeta when ``d > high``.
+        A single float is shorthand for ``(0.7 * val, val)``.
+        Defaults to ``(10 * dx, 15 * dx)``.
         
     Returns
     -------
@@ -93,12 +95,19 @@ def find_tc_center(
         psi_da = compute_psi(ds, level)
         dx = float(ds.coords['dx'].values)
         if distance_threshold is None:
-            distance_threshold = 10.0 * dx
+            threshold_low = 10.0 * dx
+            threshold_high = 15.0 * dx
+        elif isinstance(distance_threshold, tuple):
+            threshold_low, threshold_high = distance_threshold
+        else:
+            threshold_high = float(distance_threshold)
+            threshold_low = 0.7 * threshold_high
         Lx = float(ds.sizes['xc']) * dx
         Ly = float(ds.sizes['yc']) * float(ds.coords['dy'].values)
         return _adaptive_track(
             zeta_da, psi_da, radius=radius,
-            distance_threshold=distance_threshold, Lx=Lx, Ly=Ly,
+            threshold_low=threshold_low, threshold_high=threshold_high,
+            Lx=Lx, Ly=Ly,
         )
     
     # Prepare field
@@ -193,17 +202,19 @@ def _adaptive_track(
     zeta_da: xr.DataArray,
     psi_da: xr.DataArray,
     radius: float,
-    distance_threshold: float,
+    threshold_low: float,
+    threshold_high: float,
     Lx: float,
     Ly: float,
 ) -> xr.Dataset:
     """
-    Run both zeta-centroid and psi-extremum, select per timestep.
+    Run both zeta-centroid and psi-extremum, select per timestep
+    with hysteresis to prevent oscillation near the threshold.
 
-    When the two estimates are close (within *distance_threshold*), the
-    psi extremum is preferred because it is more accurate for organized
-    vortices.  Otherwise the zeta centroid is used because it is more
-    robust for disorganized structures.
+    Switching rules (applied sequentially over time):
+    - Currently using zeta → switch to psi only when ``d < threshold_low``
+    - Currently using psi  → switch to zeta only when ``d > threshold_high``
+    - ``threshold_low <= d <= threshold_high`` → keep previous method
 
     Parameters
     ----------
@@ -213,8 +224,10 @@ def _adaptive_track(
         Streamfunction (not negated; negation is handled here).
     radius : float
         Search radius for centroid method (m).
-    distance_threshold : float
-        Threshold distance (m) for switching.
+    threshold_low : float
+        Switch from zeta to psi when distance drops below this (m).
+    threshold_high : float
+        Switch from psi to zeta when distance exceeds this (m).
     Lx, Ly : float
         Domain lengths (m) for periodic distance calculation.
     """
@@ -226,10 +239,25 @@ def _adaptive_track(
     dy_wrap = wrap_min(track_zeta['y'] - track_psi['y'], Ly)
     d = np.sqrt(dx_wrap**2 + dy_wrap**2)
 
-    use_psi = d < distance_threshold
-    x = xr.where(use_psi, track_psi['x'], track_zeta['x'])
-    y = xr.where(use_psi, track_psi['y'], track_zeta['y'])
-    method_used = xr.where(use_psi, 'psi', 'zeta')
+    # --- Hysteresis loop ---
+    d_vals = d.values
+    nt = d_vals.size
+    use_psi = np.zeros(nt, dtype=bool)
+
+    # Start with zeta (conservative default for early disorganized stages)
+    current_psi = False
+    for t in range(nt):
+        if current_psi and d_vals[t] > threshold_high:
+            current_psi = False   # switch back to zeta
+        elif not current_psi and d_vals[t] < threshold_low:
+            current_psi = True    # switch to psi
+        use_psi[t] = current_psi
+
+    use_psi_da = xr.DataArray(use_psi, dims=d.dims, coords=d.coords)
+
+    x = xr.where(use_psi_da, track_psi['x'], track_zeta['x'])
+    y = xr.where(use_psi_da, track_psi['y'], track_zeta['y'])
+    method_used = xr.where(use_psi_da, 'psi', 'zeta')
 
     track_ds = xr.Dataset(
         data_vars={
@@ -242,7 +270,8 @@ def _adaptive_track(
             'long_name': 'TC center coordinates (adaptive)',
             'units': 'm',
             'method': 'adaptive',
-            'distance_threshold': distance_threshold,
+            'threshold_low': threshold_low,
+            'threshold_high': threshold_high,
         },
     )
     track_ds['x'].attrs = {
