@@ -169,7 +169,6 @@ class VVMDataLoader:
 
         ds = self._open_netcdf_files()
         ds = self._restructure_to_cgrid(ds)
-        ds = self._assign_time_coordinate(ds)
         ds = self._assign_global_attrs(ds)
         ds = load_topo(self.case_path, ds, chunks=self.chunks)
         return ds
@@ -206,20 +205,6 @@ class VVMDataLoader:
                 continue
 
         return xr.merge(datasets, compat='override', join='override')
-
-    def _assign_time_coordinate(self, ds: xr.Dataset) -> xr.Dataset:
-        """Compute and assign simulation time coordinate."""
-        dt_interval = self.config.get('output_interval')
-        current_steps = np.array(self.selected_steps)
-        sim_time = current_steps * dt_interval
-
-        ds = ds.assign_coords(time=sim_time)
-        ds.time.attrs.update({
-            'long_name': 'simulation time',
-            'units': 'seconds since simulation start',
-            'axis': 'T',
-        })
-        return ds
 
     def _assign_global_attrs(self, ds: xr.Dataset) -> xr.Dataset:
         """Assign global attributes including Coriolis parameter and geographic reference."""
@@ -373,12 +358,12 @@ class VVMDataLoader:
 
         if 'kzc' in ds.coords:
             ds.kzc.attrs.update({
-                'long_name': '1-based vertical level index at thermodynamic levels',
+                'long_name': '1-based vertical level index at cell centers',
                 'units': '1',
             })
         if 'kzb' in ds.coords:
             ds.kzb.attrs.update({
-                'long_name': '1-based vertical level index at interface levels',
+                'long_name': '1-based vertical level index at cell edges',
                 'units': '1',
             })
 
@@ -393,19 +378,19 @@ class VVMDataLoader:
             'yc':    {'long_name': 'y-coordinate at cell center', 'units': 'm', 'axis': 'Y'},
             'yb':    {'long_name': 'y-coordinate at cell edge', 'units': 'm', 'axis': 'Y', 'c_grid_axis_shift': 0.5},
             # Vertical
-            'zc':    {'long_name': 'height at thermodynamic levels', 'units': 'm', 'axis': 'Z', 'positive': 'up'},
-            'zb':    {'long_name': 'height at vertical interfaces', 'units': 'm', 'axis': 'Z', 'positive': 'up', 'c_grid_axis_shift': 0.5},
+            'zc':    {'long_name': 'height at cell center', 'units': 'm', 'axis': 'Z', 'positive': 'up'},
+            'zb':    {'long_name': 'height at cell edge', 'units': 'm', 'axis': 'Z', 'positive': 'up', 'c_grid_axis_shift': 0.5},
             # Distance metrics
             'dx':    {'long_name': 'grid spacing in x-direction', 'units': 'm'},
             'dy':    {'long_name': 'grid spacing in y-direction', 'units': 'm'},
             'dz':    {'long_name': 'layer thickness in z-direction', 'units': 'm'},
-            # Background profiles
-            'rho':   {'long_name': 'base state density at cell center', 'units': 'kg m-3'},
-            'rhoz':  {'long_name': 'base state density at vertical interfaces', 'units': 'kg m-3'},
-            'thbar': {'long_name': 'base state potential temperature', 'units': 'K'},
-            'pbar':  {'long_name': 'base state pressure', 'units': 'Pa'},
-            'pibar': {'long_name': 'base state Exner function', 'units': '1'},
-            'qvbar': {'long_name': 'base state water vapor mixing ratio', 'units': 'kg kg-1'},
+            # Reference profiles
+            'rho':   {'long_name': 'reference state density at cell center', 'units': 'kg m-3'},
+            'rhoz':  {'long_name': 'reference state density at cell edge', 'units': 'kg m-3'},
+            'thbar': {'long_name': 'reference state potential temperature', 'units': 'K'},
+            'pbar':  {'long_name': 'reference state pressure', 'units': 'Pa'},
+            'pibar': {'long_name': 'reference state Exner function', 'units': '1'},
+            'qvbar': {'long_name': 'reference state water vapor mixing ratio', 'units': 'kg kg-1'},
         }
         for name, attrs in _COORD_ATTRS.items():
             if name in ds.coords:
