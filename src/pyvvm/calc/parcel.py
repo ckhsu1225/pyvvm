@@ -13,7 +13,7 @@ compute_cape_cin : Calculate CAPE and CIN for a VVM dataset
 import numpy as np
 import xarray as xr
 from . import formulas as F
-from .constants import Cp_d, g
+from .constants import Cpd, g
 from .._utils import take_along_vertical
 
 __all__ = [
@@ -223,11 +223,11 @@ def compute_cape_cin(ds: xr.Dataset) -> xr.Dataset:
     e_sfc = F.vapor_pressure(p_sfc, qv_sfc)
     td_sfc = F.dew_point_temperature(e_sfc)
     tl_sfc = F.lcl_temperature(t_sfc, td_sfc)
-    the_sfc = F.equivalent_potential_temperature(t_sfc, p_sfc, qv_sfc, tl_sfc)
+    the_sfc = F.equivalent_potential_temperature(th_sfc, p_sfc, pi_sfc, qv_sfc, tl_sfc)
 
     # LCL height
     dt = np.maximum(t_sfc - tl_sfc, 0)
-    lcl = (zc_sfc + dt * Cp_d / g).transpose('time', 'yc', 'xc')
+    lcl = (zc_sfc + dt * Cpd / g).transpose('time', 'yc', 'xc')
 
     # Build θes lookup table
     pgrid = ds['pbar'].values

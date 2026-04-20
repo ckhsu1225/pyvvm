@@ -24,7 +24,7 @@ print(ds['th'])  # Potential temperature
 
 # Access computed diagnostics via xarray accessor
 print(ds.vvm.thv)   # Virtual potential temperature
-print(ds.vvm.rh)    # Relative humidity
+print(ds.vvm.rhl)   # Relative humidity (liquid)
 print(ds.vvm.pv)    # Potential vorticity
 
 # Terrain-masked access
@@ -58,26 +58,43 @@ Access via `ds.vvm.<property>`:
 
 | Property | Description | Units |
 |----------|-------------|-------|
+| **Temperature** | | |
 | `t` | Air temperature | K |
 | `tv` | Virtual temperature | K |
 | `td` | Dew point temperature | K |
+| `tl` | LCL temperature | K |
+| **Potential temperature** | | |
 | `thv` | Virtual potential temperature | K |
-| `the` | Equivalent potential temperature | K |
+| `the` | Equivalent potential temperature (Bolton) | K |
 | `thes` | Saturation equivalent potential temperature | K |
+| `thei` | Ice equivalent potential temperature (Gu & Tan) | K |
+| **Moisture** | | |
 | `e` | Vapor pressure | Pa |
-| `es` | Saturation vapor pressure | Pa |
-| `qvs` | Saturation mixing ratio | kg/kg |
-| `rh` | Relative humidity | 1 |
+| `esl` | Saturation vapor pressure (liquid) | Pa |
+| `esi` | Saturation vapor pressure (ice) | Pa |
+| `qvsl` | Saturation mixing ratio (liquid) | kg/kg |
+| `qvsi` | Saturation mixing ratio (ice) | kg/kg |
+| `rhl` | Relative humidity w.r.t. liquid | 1 |
+| `rhi` | Relative humidity w.r.t. ice | 1 |
+| **Static energy** | | |
 | `sd` | Dry static energy | J/kg |
 | `hm` | Moist static energy | J/kg |
 | `hms` | Saturation moist static energy | J/kg |
+| `hf` | Frozen moist static energy | J/kg |
+| **Entropy & Gibbs** | | |
+| `s` | Specific entropy | J/kg/K |
+| `gv` | Gibbs free energy of water vapor | J/kg |
+| `gl` | Gibbs free energy of liquid water | J/kg |
+| `gi` | Gibbs free energy of ice | J/kg |
+| **Stability** | | |
 | `b` | Buoyancy | m/s² |
 | `n2` | Brunt-Väisälä frequency squared | s⁻² |
+| `cape_cin` | CAPE and CIN | J/kg |
+| **Column-integrated** | | |
 | `cwv` | Column water vapor | mm |
 | `lwp` | Liquid water path | mm |
 | `iwp` | Ice water path | mm |
 | `crh` | Column relative humidity | 1 |
-| `cape_cin` | CAPE and CIN | J/kg |
 
 ### Dynamics Diagnostics
 

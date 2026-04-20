@@ -7,6 +7,7 @@ diagnostic calculations to the VVM accessor.
 
 from __future__ import annotations
 
+import numpy as np
 import xarray as xr
 from .constants import g
 from . import formulas as F
@@ -24,6 +25,12 @@ class ThermoMixin:
     
     Available Properties
     --------------------
+    **Latent Heats**
+
+    - ``Lv`` : Latent heat of vaporization [J/kg]
+    - ``Lf`` : Latent heat of fusion [J/kg]
+    - ``Ls`` : Latent heat of sublimation [J/kg]
+
     **Temperature Variables**
     
     - ``t`` : Air temperature [K]
@@ -36,24 +43,37 @@ class ThermoMixin:
     - ``thv`` : Virtual potential temperature [K]
     - ``the`` : Equivalent potential temperature [K]
     - ``thes`` : Saturation equivalent potential temperature [K]
+    - ``thei`` : Equivalent potential temperature with respect to ice [K]
     
     **Moisture Variables**
     
     - ``e`` : Vapor pressure [Pa]
-    - ``es`` : Saturation vapor pressure [Pa]
-    - ``qvs`` : Saturation mixing ratio [kg/kg]
-    - ``rh`` : Relative humidity [1]
+    - ``esl`` : Saturation vapor pressure with respect to liquid water [Pa]
+    - ``esi`` : Saturation vapor pressure with respect to ice [Pa]
+    - ``qvsl`` : Saturation mixing ratio with respect to liquid water [kg/kg]
+    - ``qvsi`` : Saturation mixing ratio with respect to ice [kg/kg]
+    - ``rhl`` : Relative humidity with respect to liquid water [1]
+    - ``rhi`` : Relative humidity with respect to ice [1]
     
     **Static Energy Variables**
     
     - ``sd`` : Dry static energy [J/kg]
     - ``hm`` : Moist static energy [J/kg]
     - ``hms`` : Saturation moist static energy [J/kg]
+    - ``hf`` : Frozen moist static energy [J/kg]
+    
+    **Entropy and Gibbs Free Energy Variables**
+    
+    - ``s`` : Specific entropy [J/kg/K]
+    - ``gv`` : Specific Gibbs free energy of water vapor [J/kg]
+    - ``gl`` : Specific Gibbs free energy of liquid water [J/kg]
+    - ``gi`` : Specific Gibbs free energy of ice [J/kg]
     
     **Stability Variables**
     
     - ``b`` : Buoyancy [m/s²]
     - ``n2`` : Brunt-Väisälä frequency squared [s⁻²]
+    - ``cape_cin`` : CAPE and CIN from parcel analysis [J/kg]
     
     **Column-Integrated Variables**
     
@@ -62,14 +82,27 @@ class ThermoMixin:
     - ``iwp`` : Ice water path [mm]
     - ``crh`` : Column relative humidity [1]
     
-    **Derived Products**
-    
-    - ``cape_cin`` : CAPE and CIN from parcel analysis
     """
 
     # =========================================================================
     # Private calculation methods (thin wrappers around formulas)
     # =========================================================================
+
+    def _calc_qv(self, qv):
+        """Ensure non-negative water vapor mixing ratio."""
+        return np.maximum(qv, 0.0)
+
+    def _calc_Lv(self, pi, th):
+        t = F.temperature(pi, th)
+        return F.latent_heat_of_vaporization(t)
+
+    def _calc_Lf(self, pi, th):
+        t = F.temperature(pi, th)
+        return F.latent_heat_of_fusion(t)
+
+    def _calc_Ls(self, pi, th):
+        t = F.temperature(pi, th)
+        return F.latent_heat_of_sublimation(t)
 
     def _calc_t(self, pi, th):
         return F.temperature(pi, th)
@@ -77,13 +110,18 @@ class ThermoMixin:
     def _calc_e(self, p, qv):
         return F.vapor_pressure(p, qv)
 
-    def _calc_es(self, pi, th):
+    def _calc_es(self, pi, th, phase):
         t = F.temperature(pi, th)
-        return F.saturation_vapor_pressure(t)
+        return F.saturation_vapor_pressure(t, phase)
 
-    def _calc_qvs(self, p, pi, th):
-        es = self._calc_es(pi, th)
+    def _calc_qvs(self, p, pi, th, phase):
+        es = self._calc_es(pi, th, phase)
         return F.saturation_mixing_ratio(p, es)
+
+    def _calc_rh(self, p, pi, th, qv, phase):
+        e = F.vapor_pressure(p, qv)
+        es = self._calc_es(pi, th, phase)
+        return F.relative_humidity(e, es)
 
     def _calc_td(self, p, qv):
         e = F.vapor_pressure(p, qv)
@@ -94,11 +132,6 @@ class ThermoMixin:
         td = self._calc_td(p, qv)
         return F.lcl_temperature(t, td)
 
-    def _calc_rh(self, p, pi, th, qv):
-        e = F.vapor_pressure(p, qv)
-        es = self._calc_es(pi, th)
-        return F.relative_humidity(e, es)
-
     def _calc_tv(self, pi, th, qv, qc, qi, qr):
         t = F.temperature(pi, th)
         return F.virtual_temperature(t, qv, qc, qi, qr)
@@ -107,15 +140,18 @@ class ThermoMixin:
         return F.virtual_potential_temperature(th, qv, qc, qi, qr)
 
     def _calc_the(self, p, pi, th, qv):
-        t = F.temperature(pi, th)
         tl = self._calc_tl(p, pi, th, qv)
-        return F.equivalent_potential_temperature(t, p, qv, tl)
+        return F.equivalent_potential_temperature(th, p, pi, qv, tl)
 
     def _calc_thes(self, p, pi, th):
         t = F.temperature(pi, th)
         es = F.saturation_vapor_pressure(t)
         qvs = F.saturation_mixing_ratio(p, es)
         return F.saturation_equivalent_potential_temperature(t, p, es, qvs)
+
+    def _calc_thei(self, p, pi, th, qv, qc, qi, qr):
+        t = F.temperature(pi, th)
+        return F.ice_equivalent_potential_temperature(t, p, qv, qc, qi, qr)
 
     def _calc_sd(self, z, pi, th):
         t = F.temperature(pi, th)
@@ -130,11 +166,65 @@ class ThermoMixin:
         qvs = self._calc_qvs(p, pi, th)
         return F.saturation_moist_static_energy(t, z, qvs)
 
-    def _calc_b(self, thbar, qvbar, th, qv, qc, qi, qr):
-        thv_bar = F.virtual_potential_temperature(thbar, qvbar, 0, 0, 0)
-        thv = F.virtual_potential_temperature(th, qv, qc, qi, qr)
-        thv_prime = thv - thv_bar
-        return g * thv_prime / thv_bar
+    def _calc_hf(self, z, pi, th, qv, qi):
+        t = F.temperature(pi, th)
+        return F.frozen_moist_static_energy(t, z, qv, qi)
+
+    def _calc_s(self, p, pi, th, qv, qc, qi, qr):
+        t = F.temperature(pi, th)
+        return F.specific_entropy(t, p, qv, qc, qi, qr)
+
+    def _calc_gv(self, p, pi, th, qv):
+        t = F.temperature(pi, th)
+        return F.specific_gibbs_free_energy_of_water_vapor(t, p, qv)
+
+    def _calc_gl(self, pi, th):
+        t = F.temperature(pi, th)
+        return F.specific_gibbs_free_energy_of_liquid_water(t)
+
+    def _calc_gi(self, pi, th):
+        t = F.temperature(pi, th)
+        return F.specific_gibbs_free_energy_of_ice(t)
+
+    # =========================================================================
+    # Public properties - Latent heat
+    # =========================================================================
+
+    @property
+    def Lv(self) -> xr.DataArray:
+        """Latent heat of vaporization [J/kg]."""
+        ds = self._ds
+        Lv = self._calc_Lv(ds['pibar'], ds['th'])
+        Lv.attrs.update({
+            'standard_name': 'latent_heat_of_vaporization',
+            'long_name': 'latent heat of vaporization',
+            'units': 'J kg-1',
+        })
+        return Lv.rename('Lv')
+
+    @property
+    def Lf(self) -> xr.DataArray:
+        """Latent heat of fusion [J/kg]."""
+        ds = self._ds
+        Lf = self._calc_Lf(ds['pibar'], ds['th'])
+        Lf.attrs.update({
+            'standard_name': 'latent_heat_of_fusion',
+            'long_name': 'latent heat of fusion',
+            'units': 'J kg-1',
+        })
+        return Lf.rename('Lf')
+
+    @property
+    def Ls(self) -> xr.DataArray:
+        """Latent heat of sublimation [J/kg]."""
+        ds = self._ds
+        Ls = self._calc_Ls(ds['pibar'], ds['th'])
+        Ls.attrs.update({
+            'standard_name': 'latent_heat_of_sublimation',
+            'long_name': 'latent heat of sublimation',
+            'units': 'J kg-1',
+        })
+        return Ls.rename('Ls')
 
     # =========================================================================
     # Public properties - Temperature
@@ -156,7 +246,8 @@ class ThermoMixin:
     def tv(self) -> xr.DataArray:
         """Virtual temperature [K]."""
         ds = self._ds
-        tv = self._calc_tv(ds['pibar'], ds['th'], ds['qv'], ds['qc'], ds['qi'], ds['qr'])
+        qv = self._calc_qv(ds['qv'])
+        tv = self._calc_tv(ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
         tv.attrs.update({
             'standard_name': 'virtual_temperature',
             'long_name': 'virtual temperature',
@@ -168,7 +259,8 @@ class ThermoMixin:
     def td(self) -> xr.DataArray:
         """Dew point temperature [K]."""
         ds = self._ds
-        td = self._calc_td(ds['pbar'], ds['qv'])
+        qv = self._calc_qv(ds['qv'])
+        td = self._calc_td(ds['pbar'], qv)
         td.attrs.update({
             'standard_name': 'dew_point_temperature',
             'long_name': 'dew point temperature',
@@ -180,7 +272,8 @@ class ThermoMixin:
     def tl(self) -> xr.DataArray:
         """Lifting condensation level temperature [K]."""
         ds = self._ds
-        tl = self._calc_tl(ds['pbar'], ds['pibar'], ds['th'], ds['qv'])
+        qv = self._calc_qv(ds['qv'])
+        tl = self._calc_tl(ds['pbar'], ds['pibar'], ds['th'], qv)
         tl.attrs.update({
             'standard_name': 'lifting_condensation_level_temperature',
             'long_name': 'lifting condensation level temperature',
@@ -196,7 +289,8 @@ class ThermoMixin:
     def thv(self) -> xr.DataArray:
         """Virtual potential temperature [K]."""
         ds = self._ds
-        thv = self._calc_thv(ds['th'], ds['qv'], ds['qc'], ds['qi'], ds['qr'])
+        qv = self._calc_qv(ds['qv'])
+        thv = self._calc_thv(ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
         thv.attrs.update({
             'standard_name': 'virtual_potential_temperature',
             'long_name': 'virtual potential temperature',
@@ -208,7 +302,8 @@ class ThermoMixin:
     def the(self) -> xr.DataArray:
         """Equivalent potential temperature [K]."""
         ds = self._ds
-        the = self._calc_the(ds['pbar'], ds['pibar'], ds['th'], ds['qv'])
+        qv = self._calc_qv(ds['qv'])
+        the = self._calc_the(ds['pbar'], ds['pibar'], ds['th'], qv)
         the.attrs.update({
             'standard_name': 'equivalent_potential_temperature',
             'long_name': 'equivalent potential temperature',
@@ -228,6 +323,19 @@ class ThermoMixin:
         })
         return thes.rename('thes')
 
+    @property
+    def thei(self) -> xr.DataArray:
+        """Equivalent potential temperature with respect to ice [K]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        thei = self._calc_thei(ds['pbar'], ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
+        thei.attrs.update({
+            'standard_name': 'ice_equivalent_potential_temperature',
+            'long_name': 'equivalent potential temperature with respect to ice',
+            'units': 'K',
+        })
+        return thei.rename('thei')
+
     # =========================================================================
     # Public properties - Moisture
     # =========================================================================
@@ -236,7 +344,8 @@ class ThermoMixin:
     def e(self) -> xr.DataArray:
         """Vapor pressure [Pa]."""
         ds = self._ds
-        e = self._calc_e(ds['pbar'], ds['qv'])
+        qv = self._calc_qv(ds['qv'])
+        e = self._calc_e(ds['pbar'], qv)
         e.attrs.update({
             'standard_name': 'vapor_pressure',
             'long_name': 'vapor pressure',
@@ -245,40 +354,78 @@ class ThermoMixin:
         return e.rename('e')
 
     @property
-    def es(self) -> xr.DataArray:
-        """Saturation vapor pressure [Pa]."""
+    def esl(self) -> xr.DataArray:
+        """Saturation vapor pressure with respect to liquid water [Pa]."""
         ds = self._ds
-        es = self._calc_es(ds['pibar'], ds['th'])
-        es.attrs.update({
-            'standard_name': 'saturation_vapor_pressure',
-            'long_name': 'saturation vapor pressure',
+        esl = self._calc_es(ds['pibar'], ds['th'], phase='liquid')
+        esl.attrs.update({
+            'standard_name': 'saturation_vapor_pressure_liquid',
+            'long_name': 'saturation vapor pressure with respect to liquid water',
             'units': 'Pa',
         })
-        return es.rename('es')
+        return esl.rename('esl')
 
     @property
-    def qvs(self) -> xr.DataArray:
-        """Saturation mixing ratio [kg/kg]."""
+    def esi(self) -> xr.DataArray:
+        """Saturation vapor pressure with respect to ice [Pa]."""
         ds = self._ds
-        qvs = self._calc_qvs(ds['pbar'], ds['pibar'], ds['th'])
-        qvs.attrs.update({
-            'standard_name': 'saturation_mixing_ratio',
-            'long_name': 'saturation mixing ratio',
+        esi = self._calc_es(ds['pibar'], ds['th'], phase='ice')
+        esi.attrs.update({
+            'standard_name': 'saturation_vapor_pressure_ice',
+            'long_name': 'saturation vapor pressure with respect to ice',
+            'units': 'Pa',
+        })
+        return esi.rename('esi')
+
+    @property
+    def qvsl(self) -> xr.DataArray:
+        """Saturation mixing ratio with respect to liquid water [kg/kg]."""
+        ds = self._ds
+        qvsl = self._calc_qvs(ds['pbar'], ds['pibar'], ds['th'], phase='liquid')
+        qvsl.attrs.update({
+            'standard_name': 'saturation_mixing_ratio_liquid',
+            'long_name': 'saturation mixing ratio with respect to liquid water',
             'units': 'kg kg-1',
         })
-        return qvs.rename('qvs')
+        return qvsl.rename('qvsl')
 
     @property
-    def rh(self) -> xr.DataArray:
-        """Relative humidity [1]."""
+    def qvsi(self) -> xr.DataArray:
+        """Saturation mixing ratio with respect to ice [kg/kg]."""
         ds = self._ds
-        rh = self._calc_rh(ds['pbar'], ds['pibar'], ds['th'], ds['qv'])
-        rh.attrs.update({
-            'standard_name': 'relative_humidity',
-            'long_name': 'relative humidity',
+        qvsi = self._calc_qvs(ds['pbar'], ds['pibar'], ds['th'], phase='ice')
+        qvsi.attrs.update({
+            'standard_name': 'saturation_mixing_ratio_ice',
+            'long_name': 'saturation mixing ratio with respect to ice',
+            'units': 'kg kg-1',
+        })
+        return qvsi.rename('qvsi')
+
+    @property
+    def rhl(self) -> xr.DataArray:
+        """Relative humidity with respect to liquid water [1]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        rhl = self._calc_rh(ds['pbar'], ds['pibar'], ds['th'], qv, phase='liquid')
+        rhl.attrs.update({
+            'standard_name': 'relative_humidity_liquid',
+            'long_name': 'relative humidity with respect to liquid water',
             'units': '1',
         })
-        return rh.rename('rh')
+        return rhl.rename('rhl')
+
+    @property
+    def rhi(self) -> xr.DataArray:
+        """Relative humidity with respect to ice [1]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        rhi = self._calc_rh(ds['pbar'], ds['pibar'], ds['th'], qv, phase='ice')
+        rhi.attrs.update({
+            'standard_name': 'relative_humidity_ice',
+            'long_name': 'relative humidity with respect to ice',
+            'units': '1',
+        })
+        return rhi.rename('rhi')
 
     # =========================================================================
     # Public properties - Static Energy
@@ -300,7 +447,8 @@ class ThermoMixin:
     def hm(self) -> xr.DataArray:
         """Moist static energy [J/kg]."""
         ds = self._ds
-        hm = self._calc_hm(ds['zc'], ds['pibar'], ds['th'], ds['qv'])
+        qv = self._calc_qv(ds['qv'])
+        hm = self._calc_hm(ds['zc'], ds['pibar'], ds['th'], qv)
         hm.attrs.update({
             'standard_name': 'moist_static_energy',
             'long_name': 'moist static energy',
@@ -320,6 +468,73 @@ class ThermoMixin:
         })
         return hms.rename('hms')
 
+    @property
+    def hf(self) -> xr.DataArray:
+        """Frozen moist static energy [J/kg]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        hf = self._calc_hf(ds['zc'], ds['pibar'], ds['th'], qv, ds['qi'])
+        hf.attrs.update({
+            'standard_name': 'frozen_moist_static_energy',
+            'long_name': 'frozen moist static energy',
+            'units': 'J kg-1',
+        })
+        return hf.rename('hf')
+
+    # =========================================================================
+    # Public properties - Entropy and Gibbs free energy
+    # =========================================================================
+
+    @property
+    def s(self) -> xr.DataArray:
+        """Specific entropy [J/kg/K]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        s = self._calc_s(ds['pbar'], ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
+        s.attrs.update({
+            'standard_name': 'specific_entropy',
+            'long_name': 'specific entropy',
+            'units': 'J kg-1 K-1',
+        })
+        return s.rename('s')
+
+    @property
+    def gv(self) -> xr.DataArray:
+        """Specific Gibbs free energy of water vapor [J/kg]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        gv = self._calc_gv(ds['pbar'], ds['pibar'], ds['th'], qv)
+        gv.attrs.update({
+            'standard_name': 'specific_gibbs_free_energy_of_water_vapor',
+            'long_name': 'specific Gibbs free energy of water vapor',
+            'units': 'J kg-1',
+        })
+        return gv.rename('gv')
+
+    @property
+    def gl(self) -> xr.DataArray:
+        """Specific Gibbs free energy of liquid water [J/kg]."""
+        ds = self._ds
+        gl = self._calc_gl(ds['pibar'], ds['th'])
+        gl.attrs.update({
+            'standard_name': 'specific_gibbs_free_energy_of_liquid_water',
+            'long_name': 'specific Gibbs free energy of liquid water',
+            'units': 'J kg-1',
+        })
+        return gl.rename('gl')
+
+    @property
+    def gi(self) -> xr.DataArray:
+        """Specific Gibbs free energy of ice [J/kg]."""
+        ds = self._ds
+        gi = self._calc_gi(ds['pibar'], ds['th'])
+        gi.attrs.update({
+            'standard_name': 'specific_gibbs_free_energy_of_ice',
+            'long_name': 'specific Gibbs free energy of ice',
+            'units': 'J kg-1',
+        })
+        return gi.rename('gi')
+
     # =========================================================================
     # Public properties - Stability
     # =========================================================================
@@ -328,7 +543,12 @@ class ThermoMixin:
     def b(self) -> xr.DataArray:
         """Buoyancy [m/s²]."""
         ds = self._ds
-        b = self._calc_b(ds['thbar'], ds['qvbar'], ds['th'], ds['qv'], ds['qc'], ds['qi'], ds['qr'])
+        qv = self._calc_qv(ds['qv'])
+        thv = self._calc_thv(ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
+        thv_bar = thv.mean(['xc', 'yc'])
+        thv_prime = thv - thv_bar
+        b = g * thv_prime / thv_bar
+
         b.attrs.update({
             'standard_name': 'buoyancy',
             'long_name': 'buoyancy',
@@ -355,6 +575,13 @@ class ThermoMixin:
         })
         return n2.rename('n2')
 
+    @property
+    def cape_cin(self) -> xr.Dataset:
+        """CAPE and CIN from parcel analysis."""
+        self._validate_chunks('cape_cin')
+        from .parcel import compute_cape_cin
+        return compute_cape_cin(self._ds)
+
     # =========================================================================
     # Public properties - Column-Integrated
     # =========================================================================
@@ -365,7 +592,7 @@ class ThermoMixin:
         ds = self._ds
         grid = self.grid
 
-        qv = ds['qv']
+        qv = self._calc_qv(ds['qv'])
         rho = ds['rho']
         integrand = self.mask(qv * rho)
 
@@ -432,14 +659,3 @@ class ThermoMixin:
             'units': '1',
         })
         return crh.rename('crh')
-
-    # =========================================================================
-    # Public properties - Derived Products
-    # =========================================================================
-
-    @property
-    def cape_cin(self) -> xr.Dataset:
-        """CAPE and CIN from parcel analysis."""
-        self._validate_chunks('cape_cin')
-        from .parcel import compute_cape_cin
-        return compute_cape_cin(self._ds)
