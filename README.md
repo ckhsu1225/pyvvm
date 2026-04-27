@@ -81,7 +81,8 @@ Access via `ds.vvm.<property>`:
 | `hm` | Moist static energy | J/kg |
 | `hms` | Saturation moist static energy | J/kg |
 | `hf` | Frozen moist static energy | J/kg |
-| **Entropy & Gibbs** | | |
+| **Enthalpy, Entropy & Gibbs** | | |
+| `h` | Specific enthalpy | J/kg |
 | `s` | Specific entropy | J/kg/K |
 | `gv` | Gibbs free energy of water vapor | J/kg |
 | `gl` | Gibbs free energy of liquid water | J/kg |

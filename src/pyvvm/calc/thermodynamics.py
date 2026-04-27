@@ -62,8 +62,9 @@ class ThermoMixin:
     - ``hms`` : Saturation moist static energy [J/kg]
     - ``hf`` : Frozen moist static energy [J/kg]
     
-    **Entropy and Gibbs Free Energy Variables**
+    **Enthalpy, Entropy and Gibbs Free Energy Variables**
     
+    - ``h`` : Specific enthalpy [J/kg]
     - ``s`` : Specific entropy [J/kg/K]
     - ``gv`` : Specific Gibbs free energy of water vapor [J/kg]
     - ``gl`` : Specific Gibbs free energy of liquid water [J/kg]
@@ -173,6 +174,10 @@ class ThermoMixin:
     def _calc_s(self, p, pi, th, qv, qc, qi, qr):
         t = F.temperature(pi, th)
         return F.specific_entropy(t, p, qv, qc, qi, qr)
+
+    def _calc_h(self, pi, th, qv, qc, qi, qr):
+        t = F.temperature(pi, th)
+        return F.specific_enthalpy(t, qv, qc, qi, qr)
 
     def _calc_gv(self, p, pi, th, qv):
         t = F.temperature(pi, th)
@@ -497,6 +502,19 @@ class ThermoMixin:
             'units': 'J kg-1 K-1',
         })
         return s.rename('s')
+
+    @property
+    def h(self) -> xr.DataArray:
+        """Specific enthalpy [J/kg]."""
+        ds = self._ds
+        qv = self._calc_qv(ds['qv'])
+        h = self._calc_h(ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
+        h.attrs.update({
+            'standard_name': 'specific_enthalpy',
+            'long_name': 'specific enthalpy',
+            'units': 'J kg-1',
+        })
+        return h.rename('h')
 
     @property
     def gv(self) -> xr.DataArray:

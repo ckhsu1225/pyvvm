@@ -72,7 +72,8 @@ __all__ = [
     'saturation_moist_static_energy',
     'frozen_moist_static_energy',
 
-    # Entropy and Gibbs free energy
+    # Enthalpy, Entropy and Gibbs free energy
+    'specific_enthalpy',
     'specific_entropy',
     'specific_gibbs_free_energy_of_water_vapor',
     'specific_gibbs_free_energy_of_liquid_water',
@@ -590,8 +591,41 @@ def frozen_moist_static_energy(T, z, qv, qi):
 
 
 # ============================================================================
-# Entropy and Gibbs Free Energy
+# Enthalpy, Entropy and Gibbs Free Energy
 # ============================================================================
+
+def specific_enthalpy(T, qv, qc, qi, qr):
+    """
+    Compute specific enthalpy of moist air with hydrometeors.
+
+    Parameters
+    ----------
+    T : array_like
+        Temperature [K]
+    qv : array_like
+        Water vapor mixing ratio [kg/kg]
+    qc : array_like
+        Cloud water mixing ratio [kg/kg]
+    qi : array_like
+        Ice mixing ratio [kg/kg]
+    qr : array_like
+        Rain water mixing ratio [kg/kg]
+
+    Returns
+    -------
+    array_like
+        Specific enthalpy [J kg^-1]
+    
+    References
+    ----------
+        Pauluis (2016) Eq. (A1a)-(A1c).
+    """
+    hd = Cpd * (T - T0)
+    hv = Cpv * (T - T0) + Lv0
+    hl = Cpl * (T - T0)
+    hi = Cpi * (T - T0) - Lf0
+    return hd + qv * hv + (qc + qr) * hl + qi * hi
+
 
 def specific_entropy(T, p, qv, qc, qi, qr):
     """
