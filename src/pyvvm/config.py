@@ -106,7 +106,7 @@ def parse_vvm_setup(path: str | Path) -> dict[str, Any]:
     # Calculate Coriolis parameter if CORIOLIS is enabled
     if 'CORIOLIS' in config['defines'] and 'RLAT' in config:
         rlat_rad = np.radians(config['RLAT'])
-        config['f'] = 2 * omega * np.sin(rlat_rad)
+        config['f'] = float(2 * omega * np.sin(rlat_rad))
     else:
         config['f'] = None
 

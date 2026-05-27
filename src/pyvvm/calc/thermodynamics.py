@@ -164,7 +164,7 @@ class ThermoMixin:
 
     def _calc_hms(self, z, p, pi, th):
         t = F.temperature(pi, th)
-        qvs = self._calc_qvs(p, pi, th)
+        qvs = self._calc_qvs(p, pi, th, phase = 'liquid')
         return F.saturation_moist_static_energy(t, z, qvs)
 
     def _calc_hf(self, z, pi, th, qv, qi):
