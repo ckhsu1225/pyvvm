@@ -11,7 +11,7 @@ import logging
 import numpy as np
 import xarray as xr
 from ..numerics import solve_poisson_spectral
-from .._utils import assign_compatible_coords
+from ..utils import assign_compatible_coords
 
 logger = logging.getLogger(__name__)
 

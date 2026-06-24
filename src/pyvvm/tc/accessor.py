@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING
 
 from .axisym import axisym_mean
 from .center import find_tc_center
+from .derivatives import polar_derivatives as _polar_derivatives
 from .wind import compute_vr_vt
+from .vorticity import compute_vort_rt
 from .metrics import wind_metrics_from_profile
-from .._utils import assign_compatible_coords
+from ..utils import assign_compatible_coords
 from .diag import angular_momentum, inertial_stability, mass_streamfunction
 
 if TYPE_CHECKING:
@@ -31,16 +33,18 @@ __all__ = [
 ]
 
 _TC_WIND_PROPERTIES = {'vr', 'vt', 'wind'}
-_TC_MASKED_PROPERTIES = _TC_WIND_PROPERTIES | {'aam', 'i2', 'psi'}
+_TC_VORTICITY_PROPERTIES = {'vort_r', 'vort_t', 'vorticity'}
+_TC_VECTOR_PROPERTIES = _TC_WIND_PROPERTIES | _TC_VORTICITY_PROPERTIES
+_TC_MASKED_PROPERTIES = _TC_VECTOR_PROPERTIES | {'aam', 'i2', 'psi'}
 
 
 class TCMaskedProxy:
     """
     Proxy that delegates attribute access to TCAccessor with masking enabled.
 
-    Supports computed TC properties (``vr``, ``vt``, ``wind``, ``aam``,
-    ``i2``, ``psi``) and the ``azimuth`` method, applying terrain masking
-    to the underlying data automatically.
+    Supports computed TC properties (``vr``, ``vt``, ``wind``, ``vort_r``,
+    ``vort_t``, ``vorticity``, ``aam``, ``i2``, ``psi``) and the ``azimuth``
+    method, applying terrain masking to the underlying data automatically.
 
     Examples
     --------
@@ -68,6 +72,13 @@ class TCMaskedProxy:
     ):
         """Azimuthal mean with terrain masking applied."""
         return self._tc.azimuth(var_name, radius=radius, dr=dr, masked=True)
+
+    def polar_derivatives(
+        self,
+        var_name: str | xr.DataArray,
+    ) -> xr.Dataset:
+        """Polar derivatives with terrain masking applied."""
+        return self._tc.polar_derivatives(var_name, masked=True)
 
 
 
@@ -138,7 +149,7 @@ class TCAccessor:
 
         Resolution order:
         1. If already a DataArray, return as-is.
-        2. TC-specific computed properties (vr, vt).
+        2. TC-specific computed properties (vr, vt, vort_r, vort_t).
         3. Parent accessor computed properties (thv, pv, …).
         4. Raw dataset variables (u, v, th, …).
         """
@@ -146,7 +157,7 @@ class TCAccessor:
             return var_name
 
         # TC-specific computed properties.
-        if var_name in _TC_WIND_PROPERTIES:
+        if var_name in _TC_VECTOR_PROPERTIES:
             return self._compute_property(var_name, masked=masked)
 
         source = self._parent.masked if masked else self._parent
@@ -294,6 +305,11 @@ class TCAccessor:
             if name == 'wind':
                 return wind_ds
             return wind_ds[name]
+        if name in _TC_VORTICITY_PROPERTIES:
+            vort_ds = self._compute_vort_rt(masked=masked)
+            if name == 'vorticity':
+                return vort_ds
+            return vort_ds[name]
         if name == 'aam':
             vt_bar = self.azimuth('vt', masked=masked)
             return self._canonical_dims(
@@ -327,6 +343,16 @@ class TCAccessor:
         v = self._align_to_center(v)
         return compute_vr_vt(u, v, self.track)
 
+    def _compute_vort_rt(
+        self, masked: bool = False,
+    ) -> xr.Dataset:
+        """Compute radial / tangential horizontal vorticity from xi, eta."""
+        xi = self._resolve_data('xi', masked=masked)
+        eta = -self._resolve_data('eta', masked=masked)
+        xi = self._align_to_center(xi)
+        eta = self._align_to_center(eta)
+        return compute_vort_rt(xi, eta, self.track)
+
     @property
     def wind(self) -> xr.Dataset:
         """Dataset containing vr and vt (compute once for both)."""
@@ -341,6 +367,21 @@ class TCAccessor:
     def vt(self) -> xr.DataArray:
         """Tangential wind (positive cyclonic)."""
         return self._compute_property('vt')
+
+    @property
+    def vorticity(self) -> xr.Dataset:
+        """Dataset containing radial and tangential horizontal vorticity."""
+        return self._compute_property('vorticity')
+
+    @property
+    def vort_r(self) -> xr.DataArray:
+        """Radial horizontal vorticity."""
+        return self._compute_property('vort_r')
+
+    @property
+    def vort_t(self) -> xr.DataArray:
+        """Tangential horizontal vorticity."""
+        return self._compute_property('vort_t')
 
     # =========================================================================
     # Azimuthal averaging
@@ -369,6 +410,31 @@ class TCAccessor:
             r_max=r_max,
             dr=dr_val,
         )
+
+    def polar_derivatives(
+        self,
+        var_name: str | xr.DataArray,
+        masked: bool = False,
+    ) -> xr.Dataset:
+        """
+        Compute radial and azimuthal derivatives around the TC center.
+
+        Parameters
+        ----------
+        var_name : str or xr.DataArray
+            Scalar field to differentiate.  Named fields are resolved from the
+            dataset, VVM accessor, or TC computed properties.
+        masked : bool, optional
+            Apply terrain masking before differentiating.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with ``d_dr``, ``d_ds`` and ``d_dtheta``.
+        """
+        da = self._resolve_data(var_name, masked=masked)
+        da = self._align_to_center(da)
+        return _polar_derivatives(da, self.track, self._parent.grid)
 
     def wind_metrics(
         self,

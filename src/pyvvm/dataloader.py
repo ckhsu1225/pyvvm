@@ -194,7 +194,11 @@ class VVMDataLoader:
                 ds_sub = xr.open_mfdataset(
                     file_paths,
                     chunks=self.chunks,
-                    parallel=True,
+                    # Keep metadata/file-manager creation in the client process.
+                    # With a distributed client active, parallel=True may open
+                    # netCDF4 datasets on workers and later leave invalid file
+                    # handles in lazy read tasks.
+                    parallel=False,
                     coords='minimal',
                     data_vars='minimal',
                     compat='override',

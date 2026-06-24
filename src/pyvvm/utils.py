@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import xarray as xr
 
+__all__ = [
+    'assign_compatible_coords',
+    'take_along_vertical',
+]
+
 
 def assign_compatible_coords(
     out: xr.DataArray,

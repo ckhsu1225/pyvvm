@@ -15,8 +15,8 @@ import dask.array as da
 from typing import Sequence
 from dataclasses import dataclass
 
-from ._utils import wrap_min, resolve_track
-from .._utils import assign_compatible_coords
+from .utils import wrap_min, resolve_track
+from ..utils import assign_compatible_coords
 
 
 __all__ = [

@@ -11,8 +11,8 @@ import warnings
 import numpy as np
 import xarray as xr
 
-from ._utils import wrap_min
-from .._utils import assign_compatible_coords
+from .utils import wrap_min
+from ..utils import assign_compatible_coords
 from ..numerics import solve_poisson_spectral, periodic_gaussian_smooth
 
 __all__ = [

@@ -1,6 +1,6 @@
 [project]
 name = "pyvvm"
-version = "0.4.2"
+version = "0.5.0"
 description = "VVM (Vector Vorticity Model) dataset loader"
 readme = "README.md"
 requires-python = ">=3.13"
