@@ -14,6 +14,13 @@ from .wind import compute_vr_vt
 from .vorticity import compute_vort_rt
 from .metrics import wind_metrics_from_profile
 from .diag import angular_momentum, inertial_stability, mass_streamfunction
+from .cylindrical import (
+    CylindricalGridSpec,
+    HorizontalRemapStencil,
+    apply_cylindrical_stencil,
+    build_cylindrical_stencil,
+    cylindrical_target_coordinates,
+)
 
 __all__ = [
     'TCAccessor',
@@ -29,4 +36,9 @@ __all__ = [
     'angular_momentum',
     'inertial_stability',
     'mass_streamfunction',
+    'CylindricalGridSpec',
+    'HorizontalRemapStencil',
+    'apply_cylindrical_stencil',
+    'build_cylindrical_stencil',
+    'cylindrical_target_coordinates',
 ]
