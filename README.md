@@ -178,6 +178,45 @@ vt_az = ds.vvm.tc.azimuth('vt')
 th_az_masked = ds.vvm.tc.masked.azimuth('th')
 ```
 
+#### Cartesian-to-Cylindrical Remapping
+
+```python
+from pyvvm.tc import CylindricalGridSpec, remap_dataarray
+
+# Uniform cell-centered radii and azimuths
+spec = CylindricalGridSpec.from_spacing(
+    r_max=300e3,
+    dr=2e3,
+    ntheta=360,
+    method='linear',
+    boundary='periodic',
+    nan_policy='propagate',
+)
+
+# Named raw/computed field or an arbitrary DataArray
+th_cyl = ds.vvm.tc.remap('th', spec=spec)
+derived = (ds['rhoz'] * ds['w']).rename('rhow')
+derived_cyl = ds.vvm.tc.remap(derived, spec=spec)
+
+# Variable names are optional; remap all horizontally gridded data variables
+all_cyl = ds.vvm.tc.remap_dataset(spec=spec)
+selected_cyl = ds.vvm.tc.remap_dataset(
+    spec=spec,
+    variables=['th', 'qv', 'sprec'],
+)
+
+# The free function also accepts a fixed (x, y) center
+snapshot_cyl = remap_dataarray(
+    ds['th'].isel(time=0),
+    (150e3, 200e3),
+    spec=spec,
+)
+```
+
+The source horizontal dimensions are replaced by `(theta, r)` while `time`,
+`zc`, `zb`, and other leading dimensions are preserved. Dask-backed inputs
+remain lazy.
+
 #### Wind Metrics
 
 ```python
@@ -198,6 +237,8 @@ metrics = ds.vvm.tc.wind_metrics(ws, thresholds=(15.0, 25.0, 35.0))
 #### Performance Tips
 
 - Center finding automatically loads full-chunk data when needed.
+- Use `remap_dataset` for many variables so variables on the same C-grid
+  location share their interpolation stencils.
 
 ### Dask Cluster
 

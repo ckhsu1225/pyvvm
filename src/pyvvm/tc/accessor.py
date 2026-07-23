@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING
 
 from .axisym import axisym_mean
 from .center import find_tc_center
+from .cylindrical import (
+    CylindricalGridSpec,
+    remap_dataarray,
+    remap_dataset as _remap_dataset,
+)
 from .derivatives import polar_derivatives as _polar_derivatives
 from .wind import compute_vr_vt
 from .vorticity import compute_vort_rt
@@ -79,6 +84,23 @@ class TCMaskedProxy:
     ) -> xr.Dataset:
         """Polar derivatives with terrain masking applied."""
         return self._tc.polar_derivatives(var_name, masked=True)
+
+    def remap(
+        self,
+        var_name: str | xr.DataArray,
+        *,
+        spec: CylindricalGridSpec,
+        x_dim: str | None = None,
+        y_dim: str | None = None,
+    ) -> xr.DataArray:
+        """Cylindrical remapping with terrain masking applied."""
+        return self._tc.remap(
+            var_name,
+            spec=spec,
+            masked=True,
+            x_dim=x_dim,
+            y_dim=y_dim,
+        )
 
 
 
@@ -435,6 +457,48 @@ class TCAccessor:
         da = self._resolve_data(var_name, masked=masked)
         da = self._align_to_center(da)
         return _polar_derivatives(da, self.track, self._parent.grid)
+
+    # =========================================================================
+    # Cartesian-to-cylindrical remapping
+    # =========================================================================
+
+    def remap(
+        self,
+        var_name: str | xr.DataArray,
+        *,
+        spec: CylindricalGridSpec,
+        masked: bool = False,
+        x_dim: str | None = None,
+        y_dim: str | None = None,
+    ) -> xr.DataArray:
+        """Remap a named, computed, or custom field to ``(theta, r)``.
+
+        The cached TC track supplies the cylindrical center.  Horizontal
+        staggered dimensions are interpolated directly from their own source
+        coordinates; no preliminary C-grid centering is required.
+        """
+        da = self._resolve_data(var_name, masked=masked)
+        return remap_dataarray(
+            da,
+            self.track,
+            spec=spec,
+            x_dim=x_dim,
+            y_dim=y_dim,
+        )
+
+    def remap_dataset(
+        self,
+        *,
+        spec: CylindricalGridSpec,
+        variables: str | Sequence[str] | None = None,
+    ) -> xr.Dataset:
+        """Remap selected or all gridded raw Dataset variables."""
+        return _remap_dataset(
+            self._ds,
+            self.track,
+            spec=spec,
+            variables=variables,
+        )
 
     def wind_metrics(
         self,

@@ -1,23 +1,27 @@
-"""
-Low-level Cartesian-to-cylindrical horizontal remapping kernels.
+"""Cartesian-to-cylindrical horizontal remapping.
 
-This module contains the NumPy/SciPy implementation used by the future
-xarray and Dask wrappers.  The last two axes of every input array are
-interpreted as ``(y, x)``; all leading axes are treated as independent
-batch dimensions.  Consequently, the same kernel handles three-dimensional
-fields, surface fields without a vertical coordinate, and arbitrary derived
-arrays.
+The low-level NumPy/SciPy kernel interprets the last two axes of an input
+array as ``(y, x)`` and treats every leading axis as an independent batch
+dimension.  The high-level xarray wrappers retain those leading dimensions,
+support moving centres, and construct a lazy Dask graph when the source data
+are Dask-backed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import operator
 from typing import Literal
 
+import dask
+import dask.array as dask_array
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.sparse import csr_array
+import xarray as xr
+
+from ..utils import assign_compatible_coords
 
 
 __all__ = [
@@ -26,6 +30,8 @@ __all__ = [
     "apply_cylindrical_stencil",
     "build_cylindrical_stencil",
     "cylindrical_target_coordinates",
+    "remap_dataarray",
+    "remap_dataset",
 ]
 
 
@@ -465,3 +471,515 @@ def apply_cylindrical_stencil(
         result[:, ~stencil.valid] = np.nan
 
     return result.reshape(leading_shape + stencil.output_shape)
+
+
+# =============================================================================
+# xarray / Dask wrappers
+# =============================================================================
+
+
+_X_DIM_CANDIDATES = ("xc", "xb")
+_Y_DIM_CANDIDATES = ("yc", "yb")
+
+
+@dataclass(frozen=True)
+class _CenterPlan:
+    """Centre coordinates aligned with an input DataArray."""
+
+    x: NDArray[np.float64]
+    y: NDArray[np.float64]
+    varies_with_time: bool
+
+
+def _infer_horizontal_dim(
+    da_in: xr.DataArray,
+    explicit: str | None,
+    candidates: tuple[str, ...],
+    axis_name: str,
+) -> str:
+    """Resolve one horizontal dimension and validate its coordinate."""
+    if explicit is not None:
+        if explicit not in da_in.dims:
+            raise ValueError(
+                f"{axis_name}_dim={explicit!r} is not an input dimension. "
+                f"Available dimensions: {da_in.dims}."
+            )
+        dim = explicit
+    else:
+        matches = [name for name in candidates if name in da_in.dims]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Cannot infer a unique {axis_name} dimension from {candidates}. "
+                f"Found {matches or 'none'} in dimensions {da_in.dims}; pass "
+                f"{axis_name}_dim explicitly."
+            )
+        dim = matches[0]
+
+    if dim not in da_in.coords:
+        raise ValueError(f"Input must provide a one-dimensional coordinate {dim!r}.")
+    coord = da_in.coords[dim]
+    if coord.dims != (dim,):
+        raise ValueError(
+            f"Coordinate {dim!r} must have dimensions ({dim!r},), got {coord.dims}."
+        )
+    return dim
+
+
+def _track_component_for_input(
+    component: xr.DataArray,
+    da_in: xr.DataArray,
+    name: str,
+) -> NDArray[np.float64]:
+    """Align one scalar/time-dependent track component with *da_in*."""
+    extra_dims = [
+        dim
+        for dim in component.dims
+        if dim != "time" and component.sizes[dim] != 1
+    ]
+    if extra_dims:
+        raise ValueError(
+            f"Center variable {name!r} may only vary along 'time'; "
+            f"non-singleton extra dimensions are {extra_dims}."
+        )
+    if any(dim != "time" for dim in component.dims):
+        component = component.squeeze(
+            [dim for dim in component.dims if dim != "time"],
+            drop=True,
+        )
+
+    if "time" in da_in.dims:
+        nt = da_in.sizes["time"]
+        if "time" in component.dims:
+            try:
+                component = component.sel(time=da_in.coords["time"])
+            except (KeyError, ValueError) as exc:
+                raise ValueError(
+                    f"Center variable {name!r} cannot be aligned exactly with "
+                    "the input time coordinate."
+                ) from exc
+            values = np.asarray(component.values, dtype=np.float64)
+            if values.shape != (nt,):
+                raise ValueError(
+                    f"Aligned center variable {name!r} has shape {values.shape}; "
+                    f"expected ({nt},)."
+                )
+        else:
+            values_scalar = np.asarray(component.values, dtype=np.float64).squeeze()
+            if values_scalar.ndim != 0:
+                raise ValueError(
+                    f"Center variable {name!r} must be scalar or time-dependent."
+                )
+            values = np.full(nt, float(values_scalar), dtype=np.float64)
+    else:
+        if "time" in component.dims:
+            time_coord = da_in.coords.get("time")
+            if time_coord is not None and time_coord.ndim == 0:
+                try:
+                    component = component.sel(time=time_coord)
+                except (KeyError, ValueError) as exc:
+                    raise ValueError(
+                        f"Center variable {name!r} has no value matching the "
+                        "input's scalar time coordinate."
+                    ) from exc
+            elif component.sizes["time"] == 1:
+                component = component.isel(time=0)
+            else:
+                raise ValueError(
+                    "A time-dependent center requires an input 'time' dimension "
+                    "or a scalar 'time' coordinate."
+                )
+
+        values_scalar = np.asarray(component.values, dtype=np.float64).squeeze()
+        if values_scalar.ndim != 0:
+            raise ValueError(f"Center variable {name!r} must resolve to one value.")
+        values = np.asarray([float(values_scalar)], dtype=np.float64)
+
+    if not np.isfinite(values).all():
+        raise ValueError(f"Center variable {name!r} contains NaN or Inf.")
+    return values
+
+
+def _resolve_center_plan(
+    center: xr.Dataset | Sequence[float],
+    da_in: xr.DataArray,
+) -> _CenterPlan:
+    """Normalize a fixed center or moving-center Dataset for *da_in*."""
+    nt = da_in.sizes.get("time", 1)
+
+    if isinstance(center, xr.Dataset):
+        if "x" not in center or "y" not in center:
+            raise ValueError("center Dataset must contain variables 'x' and 'y'.")
+        center_x = _track_component_for_input(center["x"], da_in, "x")
+        center_y = _track_component_for_input(center["y"], da_in, "y")
+    else:
+        if isinstance(center, (str, bytes)):
+            raise TypeError(
+                "center must be an xr.Dataset or a two-item "
+                "(center_x, center_y) sequence."
+            )
+        try:
+            center_values = np.asarray(center, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "center must be an xr.Dataset or a two-item "
+                "(center_x, center_y) sequence."
+            ) from exc
+        if center_values.shape != (2,):
+            raise ValueError(
+                "A fixed center must contain exactly two scalar values "
+                f"(center_x, center_y), got shape {center_values.shape}."
+            )
+        if not np.isfinite(center_values).all():
+            raise ValueError("Fixed center coordinates must both be finite.")
+        center_x = np.full(nt, center_values[0], dtype=np.float64)
+        center_y = np.full(nt, center_values[1], dtype=np.float64)
+
+    if center_x.shape != center_y.shape:
+        raise ValueError(
+            "Center x and y coordinates must resolve to the same shape, got "
+            f"{center_x.shape} and {center_y.shape}."
+        )
+
+    varies = bool(
+        center_x.size > 1
+        and (
+            not np.equal(center_x, center_x[0]).all()
+            or not np.equal(center_y, center_y[0]).all()
+        )
+    )
+    return _CenterPlan(x=center_x, y=center_y, varies_with_time=varies)
+
+
+def _build_stencil_collection(
+    x: NDArray[np.float64],
+    y: NDArray[np.float64],
+    center_plan: _CenterPlan,
+    spec: CylindricalGridSpec,
+    *,
+    lazy: bool,
+) -> tuple[object, ...]:
+    """Build eager stencils or shared lazy stencil tasks."""
+    indices = (
+        range(center_plan.x.size)
+        if center_plan.varies_with_time
+        else range(1)
+    )
+
+    if lazy:
+        delayed_builder = dask.delayed(build_cylindrical_stencil, pure=True)
+        return tuple(
+            delayed_builder(
+                x,
+                y,
+                center_x=float(center_plan.x[index]),
+                center_y=float(center_plan.y[index]),
+                spec=spec,
+            )
+            for index in indices
+        )
+
+    return tuple(
+        build_cylindrical_stencil(
+            x,
+            y,
+            center_x=float(center_plan.x[index]),
+            center_y=float(center_plan.y[index]),
+            spec=spec,
+        )
+        for index in indices
+    )
+
+
+def _apply_dask_stencils(
+    source: dask_array.Array,
+    stencils: tuple[object, ...],
+    center_plan: _CenterPlan,
+    spec: CylindricalGridSpec,
+    time_axis: int | None,
+) -> dask_array.Array:
+    """Construct a lazy block graph while sharing each time's stencil."""
+    rechunk: dict[int, int] = {
+        source.ndim - 2: -1,
+        source.ndim - 1: -1,
+    }
+    if center_plan.varies_with_time:
+        if time_axis is None:
+            raise ValueError("A varying center requires an input 'time' dimension.")
+        rechunk[time_axis] = 1
+    source = source.rechunk(rechunk)
+
+    source_blocks = source.to_delayed(optimize_graph=False)
+    output_blocks = np.empty(source_blocks.shape, dtype=object)
+    output_dtype = np.result_type(source.dtype, np.float32)
+
+    for block_index in np.ndindex(source_blocks.shape[:-2]):
+        stencil_index = block_index[time_axis] if center_plan.varies_with_time else 0
+        task = dask.delayed(apply_cylindrical_stencil)(
+            source_blocks[block_index + (0, 0)],
+            stencils[stencil_index],
+        )
+        block_shape = tuple(
+            source.chunks[axis][block_index[axis]]
+            for axis in range(source.ndim - 2)
+        ) + spec.shape
+        output_blocks[block_index + (0, 0)] = dask_array.from_delayed(
+            task,
+            shape=block_shape,
+            dtype=output_dtype,
+        )
+
+    return dask_array.block(output_blocks.tolist())
+
+
+def _apply_eager_stencils(
+    source: NDArray,
+    stencils: tuple[object, ...],
+    center_plan: _CenterPlan,
+    time_axis: int | None,
+) -> NDArray:
+    """Apply one fixed stencil or one stencil per input time."""
+    if not center_plan.varies_with_time:
+        return apply_cylindrical_stencil(source, stencils[0])
+
+    if time_axis is None:
+        raise ValueError("A varying center requires an input 'time' dimension.")
+    source_by_time = np.moveaxis(source, time_axis, 0)
+    remapped = np.stack(
+        [
+            apply_cylindrical_stencil(source_by_time[index], stencils[index])
+            for index in range(source_by_time.shape[0])
+        ],
+        axis=0,
+    )
+    return np.moveaxis(remapped, 0, time_axis)
+
+
+def _remap_dataarray_impl(
+    da_in: xr.DataArray,
+    center: xr.Dataset | Sequence[float],
+    *,
+    spec: CylindricalGridSpec,
+    x_dim: str | None,
+    y_dim: str | None,
+    stencil_cache: dict[tuple[str, str, bool, bool], tuple[object, ...]],
+) -> xr.DataArray:
+    """Implementation shared by the DataArray and Dataset entry points."""
+    if not isinstance(da_in, xr.DataArray):
+        raise TypeError(f"da_in must be an xr.DataArray, got {type(da_in).__name__}.")
+    if not isinstance(spec, CylindricalGridSpec):
+        raise TypeError(
+            f"spec must be a CylindricalGridSpec, got {type(spec).__name__}."
+        )
+    if not (
+        np.issubdtype(da_in.dtype, np.number)
+        or np.issubdtype(da_in.dtype, np.bool_)
+    ):
+        raise TypeError(f"da_in must have a numeric dtype, got {da_in.dtype}.")
+
+    x_name = _infer_horizontal_dim(da_in, x_dim, _X_DIM_CANDIDATES, "x")
+    y_name = _infer_horizontal_dim(da_in, y_dim, _Y_DIM_CANDIDATES, "y")
+    if x_name == y_name:
+        raise ValueError("x_dim and y_dim must be different dimensions.")
+
+    leading_dims = tuple(
+        dim for dim in da_in.dims if dim not in (y_name, x_name)
+    )
+    collisions = {"theta", "r"}.intersection(leading_dims)
+    if collisions:
+        raise ValueError(
+            "Input leading dimensions collide with cylindrical output dimensions: "
+            f"{sorted(collisions)}. Rename them before remapping."
+        )
+
+    source_da = da_in.transpose(*leading_dims, y_name, x_name)
+    source_data = source_da.data
+    lazy = isinstance(source_data, dask_array.Array)
+    center_plan = _resolve_center_plan(center, da_in)
+    time_axis = leading_dims.index("time") if "time" in leading_dims else None
+
+    x_values = np.asarray(da_in.coords[x_name].values, dtype=np.float64)
+    y_values = np.asarray(da_in.coords[y_name].values, dtype=np.float64)
+    cache_key = (x_name, y_name, lazy, center_plan.varies_with_time)
+    stencils = stencil_cache.get(cache_key)
+    if stencils is None:
+        stencils = _build_stencil_collection(
+            x_values,
+            y_values,
+            center_plan,
+            spec,
+            lazy=lazy,
+        )
+        stencil_cache[cache_key] = stencils
+
+    if lazy:
+        remapped_data = _apply_dask_stencils(
+            source_data,
+            stencils,
+            center_plan,
+            spec,
+            time_axis,
+        )
+    else:
+        remapped_data = _apply_eager_stencils(
+            np.asarray(source_data),
+            stencils,
+            center_plan,
+            time_axis,
+        )
+
+    out = xr.DataArray(
+        remapped_data,
+        dims=leading_dims + ("theta", "r"),
+        coords={
+            "theta": ("theta", spec.theta),
+            "r": ("r", spec.r),
+        },
+        name=da_in.name,
+        attrs=dict(da_in.attrs),
+    )
+    out = assign_compatible_coords(out, da_in)
+
+    if "time" in out.dims:
+        out = out.assign_coords(
+            center_x=("time", center_plan.x),
+            center_y=("time", center_plan.y),
+        )
+    else:
+        out = out.assign_coords(
+            center_x=float(center_plan.x[0]),
+            center_y=float(center_plan.y[0]),
+        )
+
+    out.coords["theta"].attrs = {
+        "long_name": "azimuth",
+        "units": "rad",
+        "comment": "Counter-clockwise from the positive x-axis.",
+    }
+    out.coords["r"].attrs = {"long_name": "radius", "units": "m"}
+    out.coords["center_x"].attrs = {
+        "long_name": "cylindrical grid center x-coordinate",
+        "units": "m",
+    }
+    out.coords["center_y"].attrs = {
+        "long_name": "cylindrical grid center y-coordinate",
+        "units": "m",
+    }
+    out.attrs.update(
+        {
+            "cylindrical_interpolation": spec.method,
+            "cylindrical_boundary": spec.boundary,
+            "cylindrical_nan_policy": spec.nan_policy,
+        }
+    )
+    return out
+
+
+def remap_dataarray(
+    da_in: xr.DataArray,
+    center: xr.Dataset | Sequence[float],
+    *,
+    spec: CylindricalGridSpec,
+    x_dim: str | None = None,
+    y_dim: str | None = None,
+) -> xr.DataArray:
+    """Remap one DataArray from a Cartesian to a cylindrical grid.
+
+    Parameters
+    ----------
+    da_in : xr.DataArray
+        Numeric input with one x and one y dimension.  Any other dimensions,
+        including ``time``, ``zc`` or ``zb``, are preserved.  Surface fields
+        therefore need no artificial vertical dimension.
+    center : xr.Dataset or two-item sequence
+        Either a moving-center Dataset containing ``x`` and ``y`` variables,
+        optionally on ``time``, or a fixed ``(center_x, center_y)`` pair.
+    spec : CylindricalGridSpec
+        Target radii, azimuths and interpolation settings.
+    x_dim, y_dim : str, optional
+        Source horizontal dimensions.  By default VVM dimensions are inferred
+        independently from ``xc``/``xb`` and ``yc``/``yb``.
+
+    Returns
+    -------
+    xr.DataArray
+        A DataArray whose source horizontal dimensions are replaced by
+        ``(theta, r)``.  Dask-backed inputs remain lazy.
+
+    Notes
+    -----
+    A varying center is resolved once per time.  Its stencil is shared by all
+    vertical and other leading-dimension chunks for that time.  Horizontal
+    source dimensions are rechunked to one core block when necessary.
+    """
+    return _remap_dataarray_impl(
+        da_in,
+        center,
+        spec=spec,
+        x_dim=x_dim,
+        y_dim=y_dim,
+        stencil_cache={},
+    )
+
+
+def remap_dataset(
+    ds_in: xr.Dataset,
+    center: xr.Dataset | Sequence[float],
+    *,
+    spec: CylindricalGridSpec,
+    variables: str | Sequence[str] | None = None,
+) -> xr.Dataset:
+    """Remap selected or all horizontally gridded Dataset variables.
+
+    When *variables* is ``None``, every data variable containing exactly one
+    VVM x dimension (``xc`` or ``xb``) and one VVM y dimension (``yc`` or
+    ``yb``) is remapped.  Variables without horizontal dimensions are omitted.
+    Different C-grid locations and vertical dimensions are handled
+    independently without broadcasting them against one another.
+    """
+    if not isinstance(ds_in, xr.Dataset):
+        raise TypeError(f"ds_in must be an xr.Dataset, got {type(ds_in).__name__}.")
+    if not isinstance(spec, CylindricalGridSpec):
+        raise TypeError(
+            f"spec must be a CylindricalGridSpec, got {type(spec).__name__}."
+        )
+
+    if variables is None:
+        selected = [
+            name
+            for name, variable in ds_in.data_vars.items()
+            if len([dim for dim in _X_DIM_CANDIDATES if dim in variable.dims]) == 1
+            and len([dim for dim in _Y_DIM_CANDIDATES if dim in variable.dims]) == 1
+        ]
+    else:
+        requested = [variables] if isinstance(variables, str) else list(variables)
+        selected = list(dict.fromkeys(requested))
+        missing = [name for name in selected if name not in ds_in.data_vars]
+        if missing:
+            raise ValueError(f"Dataset data variables not found: {missing}.")
+
+    if not selected:
+        raise ValueError("No horizontally gridded data variables were selected.")
+
+    stencil_cache: dict[
+        tuple[str, str, bool, bool], tuple[object, ...]
+    ] = {}
+    remapped = {
+        name: _remap_dataarray_impl(
+            ds_in[name],
+            center,
+            spec=spec,
+            x_dim=None,
+            y_dim=None,
+            stencil_cache=stencil_cache,
+        )
+        for name in selected
+    }
+    out = xr.Dataset(remapped, attrs=dict(ds_in.attrs))
+    out.attrs.update(
+        {
+            "cylindrical_interpolation": spec.method,
+            "cylindrical_boundary": spec.boundary,
+            "cylindrical_nan_policy": spec.nan_policy,
+        }
+    )
+    return out

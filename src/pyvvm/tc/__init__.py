@@ -20,6 +20,8 @@ from .cylindrical import (
     apply_cylindrical_stencil,
     build_cylindrical_stencil,
     cylindrical_target_coordinates,
+    remap_dataarray,
+    remap_dataset,
 )
 
 __all__ = [
@@ -41,4 +43,6 @@ __all__ = [
     'apply_cylindrical_stencil',
     'build_cylindrical_stencil',
     'cylindrical_target_coordinates',
+    'remap_dataarray',
+    'remap_dataset',
 ]
