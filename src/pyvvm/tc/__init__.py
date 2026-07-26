@@ -23,6 +23,11 @@ from .cylindrical import (
     remap_dataarray,
     remap_dataset,
 )
+from .cylindrical_vectors import (
+    rotate_vector,
+    rotate_vorticity,
+    rotate_wind,
+)
 
 __all__ = [
     'TCAccessor',
@@ -45,4 +50,7 @@ __all__ = [
     'cylindrical_target_coordinates',
     'remap_dataarray',
     'remap_dataset',
+    'rotate_vector',
+    'rotate_wind',
+    'rotate_vorticity',
 ]

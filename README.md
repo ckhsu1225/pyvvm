@@ -181,7 +181,14 @@ th_az_masked = ds.vvm.tc.masked.azimuth('th')
 #### Cartesian-to-Cylindrical Remapping
 
 ```python
-from pyvvm.tc import CylindricalGridSpec, remap_dataarray
+import xarray as xr
+
+from pyvvm.tc import (
+    CylindricalGridSpec,
+    remap_dataarray,
+    rotate_vorticity,
+    rotate_wind,
+)
 
 # Uniform cell-centered radii and azimuths
 spec = CylindricalGridSpec.from_spacing(
@@ -205,6 +212,21 @@ selected_cyl = ds.vvm.tc.remap_dataset(
     variables=['th', 'qv', 'sprec'],
 )
 
+# Remap vector components from their native C-grid locations first, then rotate
+vectors_cyl = ds.vvm.tc.remap_dataset(
+    spec=spec,
+    variables=['u', 'v', 'xi', 'eta'],
+)
+wind_cyl = rotate_wind(vectors_cyl['u'], vectors_cyl['v'])
+vorticity_cyl = rotate_vorticity(
+    vectors_cyl['xi'],
+    vectors_cyl['eta'],
+)
+vectors_cyl = xr.merge([vectors_cyl, wind_cyl, vorticity_cyl])
+# Added variables:
+# radial_wind, tangential_wind,
+# radial_vorticity, tangential_vorticity
+
 # The free function also accepts a fixed (x, y) center
 snapshot_cyl = remap_dataarray(
     ds['th'].isel(time=0),
@@ -215,7 +237,11 @@ snapshot_cyl = remap_dataarray(
 
 The source horizontal dimensions are replaced by `(theta, r)` while `time`,
 `zc`, `zb`, and other leading dimensions are preserved. Dask-backed inputs
-remain lazy.
+remain lazy. Vector rotation is performed at the cylindrical targets, using
+`theta` measured counter-clockwise from the positive x-axis. For raw VVM
+horizontal vorticity, `rotate_vorticity` applies the model convention that the
+physical y component is `-eta`. Components at an explicitly requested `r=0`
+are masked by default because the cylindrical basis is undefined there.
 
 #### Wind Metrics
 
