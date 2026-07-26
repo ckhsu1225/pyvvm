@@ -156,7 +156,6 @@ class TCAccessor:
         level: float | tuple[float, float] = 1000.0,
         sigma: float = 50e3,
         radius: float = 100e3,
-        distance_threshold: float | tuple[float, float] | None = None,
     ) -> xr.Dataset:
         """Find, eagerly evaluate, and cache the TC center track."""
         track = find_tc_center(
@@ -166,7 +165,6 @@ class TCAccessor:
             level=level,
             sigma=sigma,
             radius=radius,
-            distance_threshold=distance_threshold,
         )
         self._track = track.compute()
         return self._track
