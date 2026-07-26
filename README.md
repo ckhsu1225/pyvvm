@@ -122,29 +122,13 @@ thv_masked = ds.vvm.masked.thv
 
 ### Tropical Cyclone Analysis
 
-TC-specific diagnostics are accessed via `ds.vvm.tc`:
+TC center tracking and cylindrical remapping are available through
+`ds.vvm.tc`. Diagnostics consume explicit cylindrical or radial-profile
+inputs:
 
 ```python
-# 1. Find TC center (required first step)
+# Find and cache the TC center track before accessor-based remapping
 track = ds.vvm.tc.find_center(field='psi', method='extremum', level=1000.0)
-
-# 2. Compute TC wind components
-vr = ds.vvm.tc.vr    # Radial wind (positive outward)
-vt = ds.vvm.tc.vt    # Tangential wind (positive cyclonic)
-
-# 3. Azimuthal mean of any variable
-th_az = ds.vvm.tc.azimuth('th')          # By variable name
-th_az = ds.vvm.tc.azimuth(ds['th'])      # By DataArray
-
-# 4. Wind intensity metrics (vmax, rmw, threshold radii)
-ws = ds.vvm.ws.persist()
-metrics = ds.vvm.tc.wind_metrics(ws)
-# Returns: vmax, rmw, r17, r25, r33
-
-# 5. Axisymmetric diagnostics (properties)
-aam = ds.vvm.tc.aam   # Absolute angular momentum
-i2  = ds.vvm.tc.i2    # Inertial stability
-psi = ds.vvm.tc.psi   # Mass streamfunction
 ```
 
 #### Center Finding
@@ -164,23 +148,10 @@ track = ds.vvm.tc.find_center(field='zeta', method='centroid', sigma=50e3, radiu
 track = ds.vvm.tc.find_center(field='zeta', method='centroid', level=(500.0, 3000.0))
 ```
 
-#### Azimuthal Mean
-
-```python
-# Configure default radius and resolution
-ds.vvm.tc.set_params(radius=300e3, dr=2e3)
-
-# By variable name (raw or computed)
-th_az = ds.vvm.tc.azimuth('th')
-vt_az = ds.vvm.tc.azimuth('vt')
-
-# With terrain masking
-th_az_masked = ds.vvm.tc.masked.azimuth('th')
-```
-
 #### Cartesian-to-Cylindrical Remapping
 
 ```python
+import numpy as np
 import xarray as xr
 
 from pyvvm.tc import (
@@ -226,6 +197,10 @@ vectors_cyl = xr.merge([vectors_cyl, wind_cyl, vorticity_cyl])
 # Added variables:
 # radial_wind, tangential_wind,
 # radial_vorticity, tangential_vorticity
+vectors_cyl['wind_speed'] = np.hypot(
+    vectors_cyl['u'],
+    vectors_cyl['v'],
+).rename('wind_speed')
 
 # The free function also accepts a fixed (x, y) center
 snapshot_cyl = remap_dataarray(
@@ -243,21 +218,50 @@ horizontal vorticity, `rotate_vorticity` applies the model convention that the
 physical y component is `-eta`. Components at an explicitly requested `r=0`
 are masked by default because the cylindrical basis is undefined there.
 
+#### Theta Reductions
+
+Theta reductions are explicit xarray operations, so callers choose the angular
+sector and missing-value behavior appropriate for their analysis:
+
+```python
+# Complete mean over every sampled angle
+mean = vectors_cyl.mean('theta')
+
+# First-quadrant mean on an equally spaced theta grid
+q1 = vectors_cyl.where(
+    (vectors_cyl.theta >= 0)
+    & (vectors_cyl.theta < 0.5 * np.pi),
+    drop=True,
+).mean('theta')
+```
+
 #### Wind Metrics
 
 ```python
-# Compute wind speed and persist for performance
-ws = ds.vvm.ws.persist()
+from pyvvm.tc import wind_metrics
 
-# Compute metrics (vmax, rmw, threshold radii)
-metrics = ds.vvm.tc.wind_metrics(ws)
+# wind_metrics consumes whichever radial profile the caller selected
+metrics = wind_metrics(mean['wind_speed'])
+q1_metrics = wind_metrics(
+    q1['wind_speed'],
+    thresholds=(15.0, 25.0, 35.0),
+)
+# Returns: vmax, rmw and threshold radii such as r15, r25, r35
+```
 
-# Select levels before passing
-ws_1km = ds.vvm.ws.sel(zc=1000, method='nearest').persist()
-metrics_1km = ds.vvm.tc.wind_metrics(ws_1km)
+#### Radial-Profile Diagnostics
 
-# Custom thresholds
-metrics = ds.vvm.tc.wind_metrics(ws, thresholds=(15.0, 25.0, 35.0))
+```python
+from pyvvm.tc import (
+    angular_momentum,
+    inertial_stability,
+    mass_streamfunction,
+)
+
+f = ds.attrs.get('coriolis_parameter', 0.0)
+aam = angular_momentum(mean['tangential_wind'], f)
+i2 = inertial_stability(mean['tangential_wind'], f)
+psi = mass_streamfunction(mean['radial_wind'], ds['rho'])
 ```
 
 #### Performance Tips

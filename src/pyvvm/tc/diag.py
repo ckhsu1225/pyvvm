@@ -1,9 +1,9 @@
-"""
-Axisymmetric TC diagnostics on (time, z, r) data.
+"""TC diagnostics on caller-prepared radial profiles.
 
-All functions accept azimuthally-averaged DataArrays with a ``r``
-coordinate (bin-center radius in metres) and return DataArrays on the
-same grid.
+All functions accept DataArrays with an explicit ``r`` coordinate and perform
+no remapping or theta reduction.  The caller therefore controls the angular
+sampling and is responsible for whether an axisymmetric interpretation is
+appropriate.
 """
 
 from __future__ import annotations
@@ -44,14 +44,14 @@ def angular_momentum(vt: xr.DataArray, f: float) -> xr.DataArray:
 
     where:
         r   = radius (m)
-        vt  = azimuthal-mean tangential wind (m s-1)
+        vt  = tangential-wind radial profile (m s-1)
         f   = Coriolis parameter (s-1)
         aam = absolute angular momentum (m2 s-1)
 
     Parameters
     ----------
     vt : xr.DataArray
-        Azimuthal-mean tangential wind with ``r`` coordinate (m).
+        Tangential-wind profile with ``r`` coordinate (m).
     f : float
         Coriolis parameter (s⁻¹).
 
@@ -81,13 +81,13 @@ def inertial_stability(vt: xr.DataArray, f: float) -> xr.DataArray:
         r    = radius (m)
         vt   = azimuthal-mean tangential wind (m s-1)
         f    = Coriolis parameter (s-1)
-        zeta = azimuthal-mean vertical vorticity (s-1)
+        zeta = vertical-vorticity radial profile (s-1)
         i2   = inertial stability squared (s-2)
 
     Parameters
     ----------
     vt : xr.DataArray
-        Azimuthal-mean tangential wind with ``r`` coordinate (m).
+        Tangential-wind profile with ``r`` coordinate (m).
     f : float
         Coriolis parameter (s⁻¹).
 
@@ -125,14 +125,15 @@ def mass_streamfunction(
 
     where:
         r   = radius (m)
-        vr  = azimuthal-mean radial wind (m s-1)
+        vr  = radial-wind profile (m s-1)
         rho = background density (kg m-3)
         psi = mass streamfunction (kg s-1)
 
     Parameters
     ----------
     vr : xr.DataArray
-        Azimuthal-mean radial wind with ``r`` coordinate (m).
+        Radial-wind profile with ``r`` coordinate (m).  For the conventional
+        axisymmetric mass streamfunction, supply a complete theta mean.
         Must also have vertical dimension ``zc``.
     rho : xr.DataArray
         Background density profile (kg m⁻³) on the same ``zc`` grid.

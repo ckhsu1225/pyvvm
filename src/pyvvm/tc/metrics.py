@@ -1,15 +1,14 @@
-"""
-Axisymmetric TC wind size/intensity diagnostics on radial profiles.
-"""
+"""TC wind size and intensity diagnostics on explicit radial profiles."""
 
 from __future__ import annotations
 
-import numpy as np
-import xarray as xr
 from collections.abc import Sequence
 
+import numpy as np
+import xarray as xr
+
 __all__ = [
-    'wind_metrics_from_profile',
+    'wind_metrics',
 ]
 
 
@@ -102,18 +101,20 @@ def _profile_metrics_1d(
     return out
 
 
-def wind_metrics_from_profile(
-    wind_r: xr.DataArray,
+def wind_metrics(
+    wind_profile: xr.DataArray,
     thresholds: Sequence[float] = (17.0, 25.0, 33.0),
 ) -> xr.Dataset:
     """
-    Compute wind size/intensity metrics from axisymmetric wind profile(s).
+    Compute wind size and intensity metrics from radial wind profile(s).
 
     Parameters
     ----------
-    wind_r : xr.DataArray
-        Axisymmetric wind profile with dimension ``r`` and optional
-        leading dimensions (e.g., ``time``, ``zc``).
+    wind_profile : xr.DataArray
+        Wind-speed profile with dimension and coordinate ``r`` plus optional
+        leading dimensions such as ``time`` or ``zc``.  The caller chooses how
+        the profile is reduced from cylindrical data, for example a complete
+        theta mean or a quadrant mean.
     thresholds : sequence of float, optional
         Wind thresholds (m s-1) for threshold radii.
 
@@ -125,23 +126,60 @@ def wind_metrics_from_profile(
         - ``rmw`` : radius of maximum wind [m]
         - ``r*`` : threshold radii [m], e.g. ``r17``, ``r25``, ``r33``
     """
-    if 'r' not in wind_r.dims:
-        raise ValueError("wind_r must include 'r' dimension.")
+    if not isinstance(wind_profile, xr.DataArray):
+        raise TypeError(
+            "wind_profile must be an xr.DataArray, "
+            f"got {type(wind_profile).__name__}."
+        )
+    if 'r' not in wind_profile.dims:
+        raise ValueError("wind_profile must include dimension 'r'.")
+    if 'r' not in wind_profile.coords:
+        raise ValueError("wind_profile must include coordinate 'r'.")
+    dtype = np.dtype(wind_profile.dtype)
+    if not (
+        np.issubdtype(dtype, np.integer)
+        or np.issubdtype(dtype, np.floating)
+    ):
+        raise TypeError(
+            f"wind_profile must have a real numeric dtype, got {dtype}."
+        )
+
+    radius = wind_profile.coords['r']
+    if radius.dims != ('r',):
+        raise ValueError(
+            f"wind_profile coordinate 'r' must have dims ('r',), "
+            f"got {radius.dims}."
+        )
+
+    radius_values = np.asarray(radius.values, dtype=np.float64)
+    if radius_values.size < 1 or not np.isfinite(radius_values).all():
+        raise ValueError(
+            "wind_profile coordinate 'r' must contain at least one finite value."
+        )
+    if (radius_values < 0.0).any():
+        raise ValueError("wind_profile coordinate 'r' must be non-negative.")
+    if radius_values.size > 1 and not (np.diff(radius_values) > 0.0).all():
+        raise ValueError(
+            "wind_profile coordinate 'r' must be strictly increasing."
+        )
 
     threshold_values, threshold_names = _validate_thresholds(thresholds)
     metric_names = ['vmax', 'rmw', *threshold_names]
 
     metrics = xr.apply_ufunc(
         _profile_metrics_1d,
-        wind_r,
-        wind_r['r'],
+        wind_profile,
+        radius,
         kwargs={'thresholds': threshold_values},
         input_core_dims=[['r'], ['r']],
         output_core_dims=[['metric']],
         vectorize=True,
         dask='parallelized',
         output_dtypes=[np.float64],
-        dask_gufunc_kwargs={'output_sizes': {'metric': len(metric_names)}},
+        dask_gufunc_kwargs={
+            'output_sizes': {'metric': len(metric_names)},
+            'allow_rechunk': True,
+        },
     )
     metrics = metrics.assign_coords(metric=metric_names)
 
@@ -150,20 +188,25 @@ def wind_metrics_from_profile(
     )
 
     out['vmax'].attrs.update({
-        'long_name': 'maximum azimuthal-mean wind speed',
+        'long_name': 'maximum wind speed in radial profile',
         'units': 'm s-1',
     })
     out['rmw'].attrs.update({
-        'long_name': 'radius of maximum azimuthal-mean wind',
+        'long_name': 'radius of maximum wind in radial profile',
         'units': 'm',
     })
 
     for value, name in zip(threshold_values, threshold_names):
         out[name].attrs.update({
-            'long_name': f'radius of {value:g} m s-1 azimuthal-mean wind',
+            'long_name': (
+                f'outermost radius of {value:g} m s-1 wind in radial profile'
+            ),
             'units': 'm',
             'threshold_wind_speed': float(value),
         })
 
+    out.attrs.update({
+        'source_wind': wind_profile.name or 'custom',
+        'thresholds': tuple(float(value) for value in threshold_values),
+    })
     return out
-
