@@ -43,7 +43,6 @@ class ThermoMixin:
     - ``thv`` : Virtual potential temperature [K]
     - ``the`` : Equivalent potential temperature [K]
     - ``thes`` : Saturation equivalent potential temperature [K]
-    - ``thei`` : Equivalent potential temperature with respect to ice [K]
     
     **Moisture Variables**
     
@@ -62,13 +61,9 @@ class ThermoMixin:
     - ``hms`` : Saturation moist static energy [J/kg]
     - ``hf`` : Frozen moist static energy [J/kg]
     
-    **Enthalpy, Entropy and Gibbs Free Energy Variables**
+    **Entropy Variables**
     
-    - ``h`` : Specific enthalpy [J/kg]
     - ``s`` : Specific entropy [J/kg/K]
-    - ``gv`` : Specific Gibbs free energy of water vapor [J/kg]
-    - ``gl`` : Specific Gibbs free energy of liquid water [J/kg]
-    - ``gi`` : Specific Gibbs free energy of ice [J/kg]
     
     **Stability Variables**
     
@@ -150,10 +145,6 @@ class ThermoMixin:
         qvs = F.saturation_mixing_ratio(p, es)
         return F.saturation_equivalent_potential_temperature(t, p, es, qvs)
 
-    def _calc_thei(self, p, pi, th, qv, qc, qi, qr):
-        t = F.temperature(pi, th)
-        return F.ice_equivalent_potential_temperature(t, p, qv, qc, qi, qr)
-
     def _calc_sd(self, z, pi, th):
         t = F.temperature(pi, th)
         return F.dry_static_energy(t, z)
@@ -174,22 +165,6 @@ class ThermoMixin:
     def _calc_s(self, p, pi, th, qv, qc, qi, qr):
         t = F.temperature(pi, th)
         return F.specific_entropy(t, p, qv, qc, qi, qr)
-
-    def _calc_h(self, pi, th, qv, qc, qi, qr):
-        t = F.temperature(pi, th)
-        return F.specific_enthalpy(t, qv, qc, qi, qr)
-
-    def _calc_gv(self, p, pi, th, qv):
-        t = F.temperature(pi, th)
-        return F.specific_gibbs_free_energy_of_water_vapor(t, p, qv)
-
-    def _calc_gl(self, pi, th):
-        t = F.temperature(pi, th)
-        return F.specific_gibbs_free_energy_of_liquid_water(t)
-
-    def _calc_gi(self, pi, th):
-        t = F.temperature(pi, th)
-        return F.specific_gibbs_free_energy_of_ice(t)
 
     # =========================================================================
     # Public properties - Latent heat
@@ -327,19 +302,6 @@ class ThermoMixin:
             'units': 'K',
         })
         return thes.rename('thes')
-
-    @property
-    def thei(self) -> xr.DataArray:
-        """Equivalent potential temperature with respect to ice [K]."""
-        ds = self._ds
-        qv = self._calc_qv(ds['qv'])
-        thei = self._calc_thei(ds['pbar'], ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
-        thei.attrs.update({
-            'standard_name': 'ice_equivalent_potential_temperature',
-            'long_name': 'equivalent potential temperature with respect to ice',
-            'units': 'K',
-        })
-        return thei.rename('thei')
 
     # =========================================================================
     # Public properties - Moisture
@@ -487,7 +449,7 @@ class ThermoMixin:
         return hf.rename('hf')
 
     # =========================================================================
-    # Public properties - Entropy and Gibbs free energy
+    # Public properties - Entropy
     # =========================================================================
 
     @property
@@ -502,56 +464,6 @@ class ThermoMixin:
             'units': 'J kg-1 K-1',
         })
         return s.rename('s')
-
-    @property
-    def h(self) -> xr.DataArray:
-        """Specific enthalpy [J/kg]."""
-        ds = self._ds
-        qv = self._calc_qv(ds['qv'])
-        h = self._calc_h(ds['pibar'], ds['th'], qv, ds['qc'], ds['qi'], ds['qr'])
-        h.attrs.update({
-            'standard_name': 'specific_enthalpy',
-            'long_name': 'specific enthalpy',
-            'units': 'J kg-1',
-        })
-        return h.rename('h')
-
-    @property
-    def gv(self) -> xr.DataArray:
-        """Specific Gibbs free energy of water vapor [J/kg]."""
-        ds = self._ds
-        qv = self._calc_qv(ds['qv'])
-        gv = self._calc_gv(ds['pbar'], ds['pibar'], ds['th'], qv)
-        gv.attrs.update({
-            'standard_name': 'specific_gibbs_free_energy_of_water_vapor',
-            'long_name': 'specific Gibbs free energy of water vapor',
-            'units': 'J kg-1',
-        })
-        return gv.rename('gv')
-
-    @property
-    def gl(self) -> xr.DataArray:
-        """Specific Gibbs free energy of liquid water [J/kg]."""
-        ds = self._ds
-        gl = self._calc_gl(ds['pibar'], ds['th'])
-        gl.attrs.update({
-            'standard_name': 'specific_gibbs_free_energy_of_liquid_water',
-            'long_name': 'specific Gibbs free energy of liquid water',
-            'units': 'J kg-1',
-        })
-        return gl.rename('gl')
-
-    @property
-    def gi(self) -> xr.DataArray:
-        """Specific Gibbs free energy of ice [J/kg]."""
-        ds = self._ds
-        gi = self._calc_gi(ds['pibar'], ds['th'])
-        gi.attrs.update({
-            'standard_name': 'specific_gibbs_free_energy_of_ice',
-            'long_name': 'specific Gibbs free energy of ice',
-            'units': 'J kg-1',
-        })
-        return gi.rename('gi')
 
     # =========================================================================
     # Public properties - Stability

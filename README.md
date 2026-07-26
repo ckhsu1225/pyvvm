@@ -67,7 +67,6 @@ Access via `ds.vvm.<property>`:
 | `thv` | Virtual potential temperature | K |
 | `the` | Equivalent potential temperature (Bolton) | K |
 | `thes` | Saturation equivalent potential temperature | K |
-| `thei` | Ice equivalent potential temperature (Gu & Tan) | K |
 | **Moisture** | | |
 | `e` | Vapor pressure | Pa |
 | `esl` | Saturation vapor pressure (liquid) | Pa |
@@ -81,12 +80,8 @@ Access via `ds.vvm.<property>`:
 | `hm` | Moist static energy | J/kg |
 | `hms` | Saturation moist static energy | J/kg |
 | `hf` | Frozen moist static energy | J/kg |
-| **Enthalpy, Entropy & Gibbs** | | |
-| `h` | Specific enthalpy | J/kg |
+| **Entropy** | | |
 | `s` | Specific entropy | J/kg/K |
-| `gv` | Gibbs free energy of water vapor | J/kg |
-| `gl` | Gibbs free energy of liquid water | J/kg |
-| `gi` | Gibbs free energy of ice | J/kg |
 | **Stability** | | |
 | `b` | Buoyancy | m/s² |
 | `n2` | Brunt-Väisälä frequency squared | s⁻² |

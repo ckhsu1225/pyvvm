@@ -19,19 +19,12 @@ Bretherton, C. S., P. N. Blossey, and M. Khairoutdinov, 2005:
 D. J.Raymond, 2013: Sources and sinks of entropy in the atmosphere.
     J. Adv. Model. Earth Syst., 5, 755–763,
     https://doi.org/10.1002/jame.20050.
-Pauluis, O. M., 2016: The Mean Air Flow as Lagrangian Dynamics Approximation and Its Application to Moist Convection.
-    J. Atmos. Sci., 73, 4407–4425,
-    https://doi.org/10.1175/JAS-D-15-0284.1.
 Ambaum MHP, 2020: Accurate, simple equation for saturated vapour pressure over water and ice.
     QJR Meteorol Soc., 146: 4252–4258,
     https://doi.org/10.1002/qj.3899.
 Warren, R.A, 2025: A consistent treatment of mixed-phase saturation for atmospheric thermodynamics.
     QJR Meteorol Soc., 151:e4866.
     https://doi.org/10.1002/qj.4866.
-Gu, J.-F., & Tan, Z.-M., 2025: Reconciling the discrepancies of equivalent potential temperatures in atmosphere:
-    A general pathway rooted in entropy conservation.
-    Journal of Advances in Modeling Earth Systems, 17, e2025MS004985.
-    https://doi.org/10.1029/2025MS004985.
 """
 
 import numpy as np
@@ -64,7 +57,6 @@ __all__ = [
     # Equivalent potential temperature
     'equivalent_potential_temperature',
     'saturation_equivalent_potential_temperature',
-    'ice_equivalent_potential_temperature',
 
     # Static energies
     'dry_static_energy',
@@ -72,12 +64,8 @@ __all__ = [
     'saturation_moist_static_energy',
     'frozen_moist_static_energy',
 
-    # Enthalpy, Entropy and Gibbs free energy
-    'specific_enthalpy',
+    # Entropy
     'specific_entropy',
-    'specific_gibbs_free_energy_of_water_vapor',
-    'specific_gibbs_free_energy_of_liquid_water',
-    'specific_gibbs_free_energy_of_ice',
 ]
 
 
@@ -447,57 +435,6 @@ def saturation_equivalent_potential_temperature(T, p, es, qvs):
     return th_l * np.exp((3036.0 / T - 1.78) * qvs * (1 + 0.448 * qvs))
 
 
-def ice_equivalent_potential_temperature(T, p, qv, qc, qi, qr):
-    """
-    Compute reversible equivalent potential temperature with respect to ice.
-
-    Parameters
-    ----------
-    T : array_like
-        Temperature [K]
-    p : array_like
-        Total pressure [Pa]
-    qv : array_like
-        Water vapor mixing ratio [kg/kg]
-    qc : array_like
-        Cloud water mixing ratio [kg/kg]
-    qi : array_like
-        Ice mixing ratio [kg/kg]
-    qr : array_like
-        Rain water mixing ratio [kg/kg]
-    
-    Returns
-    -------
-    array_like
-        Ice equivalent potential temperature [K]
-
-    References
-    ----------
-    Gu & Tan (2025) Eq. (30).
-    """
-    ql = qc + qr
-    qt = qv + qc + qi + qr
-
-    Lf = latent_heat_of_fusion(T)
-    Ls = latent_heat_of_sublimation(T)
-
-    e = vapor_pressure(p, qv)
-    e_safe = _where(e > 0, e, np.nan) # Avoid log of zero or negative
-    pd = p - e
-
-    esl = saturation_vapor_pressure(T, phase='liquid')
-    esi = saturation_vapor_pressure(T, phase='ice')
-
-    denominator = Cpd + qt * Cpi
-    rhl_term = qv * np.log(e_safe / esi)
-    rhl_term = _where(qv > 0, rhl_term, 0) # If no water vapor, this term should be zero
-
-    thei = T * (p0 / pd)**(Rd / denominator) *\
-        np.exp((qv * Ls + ql * Lf) / denominator / T -\
-               Rv * (rhl_term - ql * np.log(esi / esl)) / denominator)
-    return thei
-
-
 # ============================================================================
 # Static Energies
 # ============================================================================
@@ -591,41 +528,8 @@ def frozen_moist_static_energy(T, z, qv, qi):
 
 
 # ============================================================================
-# Enthalpy, Entropy and Gibbs Free Energy
+# Entropy
 # ============================================================================
-
-def specific_enthalpy(T, qv, qc, qi, qr):
-    """
-    Compute specific enthalpy of moist air with hydrometeors.
-
-    Parameters
-    ----------
-    T : array_like
-        Temperature [K]
-    qv : array_like
-        Water vapor mixing ratio [kg/kg]
-    qc : array_like
-        Cloud water mixing ratio [kg/kg]
-    qi : array_like
-        Ice mixing ratio [kg/kg]
-    qr : array_like
-        Rain water mixing ratio [kg/kg]
-
-    Returns
-    -------
-    array_like
-        Specific enthalpy [J kg^-1]
-    
-    References
-    ----------
-        Pauluis (2016) Eq. (A1a)-(A1c).
-    """
-    hd = Cpd * (T - T0)
-    hv = Cpv * (T - T0) + Lv0
-    hl = Cpl * (T - T0)
-    hi = Cpi * (T - T0) - Lf0
-    return hd + qv * hv + (qc + qr) * hl + qi * hi
-
 
 def specific_entropy(T, p, qv, qc, qi, qr):
     """
@@ -665,72 +569,3 @@ def specific_entropy(T, p, qv, qc, qi, qr):
 
     sv = _where(qv > 0, sv, 0) # If no water vapor, its contribution to entropy is zero
     return sd + qv * sv + (qc + qr) * sl + qi * si
-
-
-def specific_gibbs_free_energy_of_water_vapor(T, p, qv):
-    """
-    Compute specific Gibbs free energy of water vapor.
-
-    Parameters
-    ----------
-    T : array_like
-        Temperature [K]
-    p : array_like
-        Total pressure [Pa]
-    qv : array_like
-        Water vapor mixing ratio [kg/kg]
-
-    Returns
-    -------
-    array_like
-        Specific Gibbs free energy of water vapor [J kg^-1]
-
-    References
-    ----------
-    Pauluis (2016) Eq. (A3a).
-    """
-    e = vapor_pressure(p, qv)
-    e_safe = _where(e > 0, e, np.nan) # Avoid log of zero or negative
-    return Cpv * (T - T0 - T * np.log(T / T0)) + Rv * T * np.log(e_safe / es0) + Lv0 * (1 - T / T0)
-
-
-def specific_gibbs_free_energy_of_liquid_water(T):
-    """
-    Compute specific Gibbs free energy of liquid water.
-
-    Parameters
-    ----------
-    T : array_like
-        Temperature [K]
-
-    Returns
-    -------
-    array_like
-        Specific Gibbs free energy of liquid water [J kg^-1]
-
-    References
-    ----------
-    Pauluis (2016) Eq. (A3b).
-    """
-    return Cpl * (T - T0 - T * np.log(T / T0))
-
-
-def specific_gibbs_free_energy_of_ice(T):
-    """
-    Compute specific Gibbs free energy of ice.
-
-    Parameters
-    ----------
-    T : array_like
-        Temperature [K]
-
-    Returns
-    -------
-    array_like
-        Specific Gibbs free energy of ice [J kg^-1]
-
-    References
-    ----------
-    Pauluis (2016) Eq. (A3c).
-    """
-    return Cpi * (T - T0 - T * np.log(T / T0)) - Lf0 * (1 - T / T0)
