@@ -292,31 +292,31 @@ class VVMAccessor(ThermoMixin, DynamicsMixin):
             # This keeps diagnostics working after scalar selections
             # like isel(zc=0), which drops the zc dimension.
             coords: dict[str, dict[str, str]] = {}
-            boundary: dict[str, str] = {}
+            padding: dict[str, str] = {}
             metrics: dict[tuple[str, ...], list[str]] = {}
 
             if {'xc', 'xb'} <= dims:
                 coords['X'] = {'center': 'xc', 'right': 'xb'}
-                boundary['X'] = 'periodic'
+                padding['X'] = 'periodic'
                 if 'dx' in self._ds:
                     metrics[('X',)] = ['dx']
 
             if {'yc', 'yb'} <= dims:
                 coords['Y'] = {'center': 'yc', 'right': 'yb'}
-                boundary['Y'] = 'periodic'
+                padding['Y'] = 'periodic'
                 if 'dy' in self._ds:
                     metrics[('Y',)] = ['dy']
 
             if {'zc', 'zb'} <= dims:
                 coords['Z'] = {'center': 'zc', 'outer': 'zb'}
-                boundary['Z'] = 'extend'
+                padding['Z'] = 'extend'
                 if 'dz' in self._ds:
                     metrics[('Z',)] = ['dz']
 
             self._grid = xgcm.Grid(
                 self._ds,
                 coords=coords,
-                boundary=boundary,
+                padding=padding,
                 metrics=metrics,
                 autoparse_metadata=False,
             )

@@ -281,15 +281,6 @@ wheels = [
 ]
 
 [[package]]
-name = "future"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490, upload-time = "2024-02-21T11:52:38.461Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326, upload-time = "2024-02-21T11:52:35.956Z" },
-]
-
-[[package]]
 name = "ipython"
 version = "9.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -883,7 +874,7 @@ wheels = [
 
 [[package]]
 name = "pyvvm"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },
@@ -903,7 +894,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "netcdf4", specifier = ">=1.7.4" },
     { name = "scipy", specifier = ">=1.17.0" },
-    { name = "xgcm", specifier = ">=0.9.0" },
+    { name = "xgcm", specifier = ">=0.10.1,<0.11" },
 ]
 
 [[package]]
@@ -1114,17 +1105,16 @@ wheels = [
 
 [[package]]
 name = "xgcm"
-version = "0.9.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dask" },
-    { name = "future" },
     { name = "numpy" },
     { name = "xarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/01/4c/ad63096d9fcc21993a511a312085d30cbb10bcc504640aeaa29a9fa0db01/xgcm-0.9.0.tar.gz", hash = "sha256:7406a87bc619841ff5afc23da1521142642c766a583c6cdd57bd78a487950e2c", size = 3619614, upload-time = "2025-08-21T00:52:45.681Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/73/5eb8e3fc0a0877abbbd909965d80b07c312de377dc6346e8bc8cc2230856/xgcm-0.10.1.tar.gz", hash = "sha256:7d3ee2ac859ff3821589b9a55f51b0867a1af688d687c54c5be5b289c4163c5f", size = 4832219, upload-time = "2026-07-21T04:34:33.934Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/81/9872dd454a1cf27f8768ff3f752e606af78e3100e00b13fe4e99005c5971/xgcm-0.9.0-py3-none-any.whl", hash = "sha256:5f5be9b556b763091f9d79fc3b2ac2c266bc0635780b6890b8b8f392e7f95199", size = 3619118, upload-time = "2025-08-21T00:52:43.937Z" },
+    { url = "https://files.pythonhosted.org/packages/58/70/a7396b6fad2d7b8a866aadc6d5dd4b20fceea136b8d4914192f3c45ef847/xgcm-0.10.1-py3-none-any.whl", hash = "sha256:773878df5edb7fa16734eb5a776b684f163b1ec0597cc0e098d1be07dba0e184", size = 132352, upload-time = "2026-07-21T04:34:32.503Z" },
 ]
 
 [[package]]

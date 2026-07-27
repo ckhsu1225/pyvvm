@@ -18,7 +18,7 @@ from .calc import accessor  # noqa: F401
 from .cluster import init_client
 from .dataloader import VVMDataLoader
 
-__version__ = '0.6.0'
+__version__ = '0.6.1'
 
 __all__ = [
     'VVMDataLoader',
